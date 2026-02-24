@@ -16,7 +16,13 @@ logger = logging.getLogger(__name__)
 # Mock mode — auto-enabled when API keys are missing
 # ---------------------------------------------------------------------------
 
-MOCK_MODE = not (os.environ.get("OPENAI_API_KEY") and os.environ.get("ELEVENLABS_API_KEY"))
+def _has_api_keys() -> bool:
+    openai_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    eleven_key = (os.environ.get("ELEVENLABS_API_KEY") or "").strip()
+    return bool(openai_key and eleven_key)
+
+
+MOCK_MODE = not _has_api_keys()
 
 if MOCK_MODE:
     logger.warning("🎭 MOCK MODE — API keys not found. Using scripted dialogue and silent audio.")
@@ -91,7 +97,7 @@ def _get_openai():
 def _get_elevenlabs():
     global _elevenlabs_client
     if _elevenlabs_client is None:
-        _elevenlabs_client = ElevenLabs()  # reads ELEVEN_API_KEY from env
+        _elevenlabs_client = ElevenLabs()  # reads ELEVENLABS_API_KEY from env
     return _elevenlabs_client
 
 

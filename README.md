@@ -12,8 +12,8 @@ source .venv/bin/activate
 # 2. Install dependencies
 pip install -r requirements.txt
 
-# 3. Add your API keys to .env
-cp .env .env  # Edit with your real keys
+# 3. Create a .env file with your API keys (see .env.example)
+#    Add OPENAI_API_KEY and ELEVENLABS_API_KEY
 
 # 4. Run the app
 python app.py
