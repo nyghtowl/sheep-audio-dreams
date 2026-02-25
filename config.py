@@ -68,6 +68,9 @@ ZARA = AgentConfig(
     ),
 )
 
+# When using ElevenLabs for all voices (e.g. no OpenAI), Zara uses this voice.
+ZARA_ELEVENLABS_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"  # Rachel
+
 AGENTS: list[AgentConfig] = [LYRA, ZARA]
 
 DM_NARRATION = (

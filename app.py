@@ -196,14 +196,19 @@ def next_turn(session: GameSession, chat_history: list):
         name, dialogue, audio_bytes, dice = session.next_turn()
     except Exception as e:
         logger.exception("Error during turn generation")
-        err_msg = str(e).strip() or type(e).__name__
+        err_str = str(e).strip() or type(e).__name__
+        if "429" in err_str and ("quota" in err_str.lower() or "insufficient_quota" in err_str.lower()):
+            hint = (
+                "**OpenAI quota exceeded.** Add payment method or check usage at "
+                "[platform.openai.com/account/billing](https://platform.openai.com/account/billing)."
+            )
+        elif "401" in err_str or "invalid" in err_str.lower() or "authentication" in err_str.lower():
+            hint = "Check your `.env`: `OPENAI_API_KEY` and `ELEVENLABS_API_KEY` must be set and valid."
+        else:
+            hint = "Check your `.env` and API keys, or try again in a moment."
         chat_history.append({
             "role": "assistant",
-            "content": (
-                "⚠️ *The magical weave flickers... (API error)*\n\n"
-                f"`{err_msg}`\n\n"
-                "Check your `.env`: `OPENAI_API_KEY` and `ELEVENLABS_API_KEY` must be set and valid."
-            ),
+            "content": f"⚠️ *The magical weave flickers... (API error)*\n\n{hint}\n\n<details><summary>Details</summary>\n`{err_str}`\n</details>",
         })
         return session, chat_history, None, ""
 

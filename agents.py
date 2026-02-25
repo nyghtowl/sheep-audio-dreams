@@ -8,7 +8,7 @@ import re
 import struct
 from pathlib import Path
 
-from config import AGENTS, DM_NARRATION, AgentConfig, TTSProvider
+from config import AGENTS, DM_NARRATION, AgentConfig, TTSProvider, ZARA_ELEVENLABS_VOICE_ID
 
 logger = logging.getLogger(__name__)
 
@@ -17,9 +17,16 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _has_api_keys() -> bool:
+    """At least one dialogue engine and ElevenLabs for voice."""
     openai_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    anthropic_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
     eleven_key = (os.environ.get("ELEVENLABS_API_KEY") or "").strip()
-    return bool(openai_key and eleven_key)
+    has_dialogue = bool(openai_key or anthropic_key)
+    return bool(has_dialogue and eleven_key)
+
+
+def _use_claude_for_dialogue() -> bool:
+    return bool((os.environ.get("ANTHROPIC_API_KEY") or "").strip())
 
 
 MOCK_MODE = not _has_api_keys()
@@ -28,7 +35,10 @@ if MOCK_MODE:
     logger.warning("🎭 MOCK MODE — API keys not found. Using scripted dialogue and silent audio.")
 else:
     from elevenlabs import ElevenLabs
-    from openai import OpenAI
+    if _use_claude_for_dialogue():
+        from anthropic import Anthropic
+    else:
+        from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Pre-scripted mock dialogue lines per character
@@ -85,6 +95,7 @@ def _generate_silent_mp3() -> bytes:
 
 _openai_client = None
 _elevenlabs_client = None
+_anthropic_client = None
 
 
 def _get_openai():
@@ -92,6 +103,13 @@ def _get_openai():
     if _openai_client is None:
         _openai_client = OpenAI()  # reads OPENAI_API_KEY from env
     return _openai_client
+
+
+def _get_anthropic():
+    global _anthropic_client
+    if _anthropic_client is None:
+        _anthropic_client = Anthropic()  # reads ANTHROPIC_API_KEY from env
+    return _anthropic_client
 
 
 def _get_elevenlabs():
@@ -102,7 +120,7 @@ def _get_elevenlabs():
 
 
 # ---------------------------------------------------------------------------
-# Dialogue generation (OpenAI GPT-4o)
+# Dialogue generation (OpenAI GPT-4o or Claude)
 # ---------------------------------------------------------------------------
 
 
@@ -110,21 +128,31 @@ def generate_dialogue(
     config: AgentConfig,
     history: list[dict[str, str]],
 ) -> str:
-    """Generate a character's next line of dialogue using OpenAI."""
+    """Generate a character's next line of dialogue using OpenAI or Claude."""
     if MOCK_MODE:
         return _mock_dialogue(config)
 
-    messages = [
-        {"role": "system", "content": config.system_prompt},
-        *history,
-    ]
-    response = _get_openai().chat.completions.create(
-        model="gpt-4o",
-        messages=messages,
-        max_tokens=150,
-        temperature=0.9,
-    )
-    return response.choices[0].message.content.strip()
+    if _use_claude_for_dialogue():
+        response = _get_anthropic().messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=150,
+            system=config.system_prompt,
+            messages=history,
+            temperature=0.9,
+        )
+        return (response.content[0].text or "").strip()
+    else:
+        messages = [
+            {"role": "system", "content": config.system_prompt},
+            *history,
+        ]
+        response = _get_openai().chat.completions.create(
+            model="gpt-4o",
+            messages=messages,
+            max_tokens=150,
+            temperature=0.9,
+        )
+        return response.choices[0].message.content.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +175,14 @@ def _strip_stage_directions(text: str) -> str:
     return cleaned or text  # fallback to original if everything was stripped
 
 
+def _use_elevenlabs_for_zara() -> bool:
+    """Use ElevenLabs for Zara (when OpenAI TTS unavailable or preferred)."""
+    if os.environ.get("USE_ELEVENLABS_FOR_ALL_VOICES", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    # When using Claude for dialogue we don't use OpenAI; Zara must use ElevenLabs.
+    return _use_claude_for_dialogue()
+
+
 def synthesize_voice(text: str, config: AgentConfig) -> bytes:
     """Convert text to speech using the agent's configured TTS provider."""
     speech_text = _strip_stage_directions(text)
@@ -157,6 +193,8 @@ def synthesize_voice(text: str, config: AgentConfig) -> bytes:
 
     if config.tts_provider == TTSProvider.ELEVENLABS:
         return _synthesize_elevenlabs(speech_text, config.voice_id)
+    if config.tts_provider == TTSProvider.OPENAI and _use_elevenlabs_for_zara():
+        return _synthesize_elevenlabs(speech_text, ZARA_ELEVENLABS_VOICE_ID)
     return _synthesize_openai(speech_text, config.voice_id)
 
 
