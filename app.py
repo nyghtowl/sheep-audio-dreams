@@ -202,6 +202,11 @@ def next_turn(session: GameSession, chat_history: list):
                 "**OpenAI quota exceeded.** Add payment method or check usage at "
                 "[platform.openai.com/account/billing](https://platform.openai.com/account/billing)."
             )
+        elif "401" in err_str and ("unusual_activity" in err_str.lower() or "free tier" in err_str.lower() or "paid plan" in err_str.lower()):
+            hint = (
+                "**ElevenLabs** has restricted your account (e.g. Free Tier disabled, or VPN/proxy detected). "
+                "Try from a normal connection, or add a [paid subscription](https://elevenlabs.io/subscription) at elevenlabs.io."
+            )
         elif "401" in err_str or "invalid" in err_str.lower() or "authentication" in err_str.lower():
             hint = "Check your `.env`: `OPENAI_API_KEY` and `ELEVENLABS_API_KEY` must be set and valid."
         else:

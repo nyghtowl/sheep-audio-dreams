@@ -115,7 +115,8 @@ def _get_anthropic():
 def _get_elevenlabs():
     global _elevenlabs_client
     if _elevenlabs_client is None:
-        _elevenlabs_client = ElevenLabs()  # reads ELEVENLABS_API_KEY from env
+        api_key = (os.environ.get("ELEVENLABS_API_KEY") or "").strip()
+        _elevenlabs_client = ElevenLabs(api_key=api_key or None)  # pass explicitly so header is set
     return _elevenlabs_client
 
 
@@ -133,11 +134,15 @@ def generate_dialogue(
         return _mock_dialogue(config)
 
     if _use_claude_for_dialogue():
+        # Claude requires at least one message; first turn has empty history.
+        messages = history if history else [
+            {"role": "user", "content": "The scene is set. You are first to speak. Deliver your opening line in character."},
+        ]
         response = _get_anthropic().messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-sonnet-4-6",
             max_tokens=150,
             system=config.system_prompt,
-            messages=history,
+            messages=messages,
             temperature=0.9,
         )
         return (response.content[0].text or "").strip()
