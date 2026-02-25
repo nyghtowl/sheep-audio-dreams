@@ -7,6 +7,7 @@ from enum import Enum
 class TTSProvider(Enum):
     ELEVENLABS = "elevenlabs"
     OPENAI = "openai"
+    GTTS = "gtts"
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,9 @@ ZARA = AgentConfig(
         "Your familiar is a tiny fire salamander named Ember.\n\n" + SCENARIO_CONTEXT
     ),
 )
+
+# When using ElevenLabs for all voices (e.g. no OpenAI), Zara uses this voice.
+ZARA_ELEVENLABS_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"  # Rachel
 
 AGENTS: list[AgentConfig] = [LYRA, ZARA]
 

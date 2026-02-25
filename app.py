@@ -1,6 +1,7 @@
 """Gradio UI for the D&D Voice Agents demo."""
 
 import logging
+import os
 import tempfile
 from pathlib import Path
 
@@ -133,13 +134,17 @@ footer { display: none !important; }
 # Helper to save audio bytes to a temp file for Gradio
 # ---------------------------------------------------------------------------
 
+_LATEST_AUDIO_PATH: str | None = None
+
 
 def audio_bytes_to_path(audio_bytes: bytes) -> str:
-    """Write audio bytes to a temp file and return the path."""
-    tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-    tmp.write(audio_bytes)
-    tmp.flush()
-    return tmp.name
+    """Write audio bytes to a temp file and return the path. Reuses one file to avoid accumulation."""
+    global _LATEST_AUDIO_PATH
+    if _LATEST_AUDIO_PATH is None:
+        fd, _LATEST_AUDIO_PATH = tempfile.mkstemp(suffix=".mp3")
+        os.close(fd)
+    Path(_LATEST_AUDIO_PATH).write_bytes(audio_bytes)
+    return _LATEST_AUDIO_PATH
 
 
 # ---------------------------------------------------------------------------
@@ -189,16 +194,31 @@ def next_turn(session: GameSession, chat_history: list):
 
     try:
         name, dialogue, audio_bytes, dice = session.next_turn()
-    except Exception:
+    except Exception as e:
         logger.exception("Error during turn generation")
+        err_str = str(e).strip() or type(e).__name__
+        if "429" in err_str and ("quota" in err_str.lower() or "insufficient_quota" in err_str.lower()):
+            hint = (
+                "**OpenAI quota exceeded.** Add payment method or check usage at "
+                "[platform.openai.com/account/billing](https://platform.openai.com/account/billing)."
+            )
+        elif "401" in err_str and ("unusual_activity" in err_str.lower() or "free tier" in err_str.lower() or "paid plan" in err_str.lower()):
+            hint = (
+                "**ElevenLabs** has restricted your account (e.g. Free Tier disabled, or VPN/proxy detected). "
+                "Try from a normal connection, or add a [paid subscription](https://elevenlabs.io/subscription) at elevenlabs.io."
+            )
+        elif "401" in err_str or "invalid" in err_str.lower() or "authentication" in err_str.lower():
+            hint = "Check your `.env`: `OPENAI_API_KEY` and `ELEVENLABS_API_KEY` must be set and valid."
+        else:
+            hint = "Check your `.env` and API keys, or try again in a moment."
         chat_history.append({
             "role": "assistant",
-            "content": "⚠️ *The magical weave flickers... (API error — try again)*",
+            "content": f"⚠️ *The magical weave flickers... (API error)*\n\n{hint}\n\n<details><summary>Details</summary>\n`{err_str}`\n</details>",
         })
         return session, chat_history, None, ""
 
-    # Find the agent config for color
-    agent = next(a for a in AGENTS if a.name == name)
+    # Find the agent config for color (fallback to first agent if name unknown)
+    agent = next((a for a in AGENTS if a.name == name), AGENTS[0])
 
     # Format the message with character color
     msg = f"**<span style='color:{agent.color}'>{name}</span>** ({agent.role})\n\n{dialogue}"

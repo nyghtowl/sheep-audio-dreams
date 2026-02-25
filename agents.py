@@ -8,7 +8,7 @@ import re
 import struct
 from pathlib import Path
 
-from config import AGENTS, DM_NARRATION, AgentConfig, TTSProvider
+from config import AGENTS, DM_NARRATION, AgentConfig, TTSProvider, ZARA_ELEVENLABS_VOICE_ID
 
 logger = logging.getLogger(__name__)
 
@@ -16,13 +16,34 @@ logger = logging.getLogger(__name__)
 # Mock mode — auto-enabled when API keys are missing
 # ---------------------------------------------------------------------------
 
-MOCK_MODE = not (os.environ.get("OPENAI_API_KEY") and os.environ.get("ELEVENLABS_API_KEY"))
+def _use_gtts() -> bool:
+    return os.environ.get("USE_GTTS", "").strip().lower() in ("1", "true", "yes")
+
+
+def _has_api_keys() -> bool:
+    """At least one dialogue engine and one TTS provider."""
+    openai_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    anthropic_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+    eleven_key = (os.environ.get("ELEVENLABS_API_KEY") or "").strip()
+    has_dialogue = bool(openai_key or anthropic_key)
+    has_tts = bool(eleven_key or _use_gtts())
+    return bool(has_dialogue and has_tts)
+
+
+def _use_claude_for_dialogue() -> bool:
+    return bool((os.environ.get("ANTHROPIC_API_KEY") or "").strip())
+
+
+MOCK_MODE = not _has_api_keys()
 
 if MOCK_MODE:
     logger.warning("🎭 MOCK MODE — API keys not found. Using scripted dialogue and silent audio.")
 else:
     from elevenlabs import ElevenLabs
-    from openai import OpenAI
+    if _use_claude_for_dialogue():
+        from anthropic import Anthropic
+    else:
+        from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Pre-scripted mock dialogue lines per character
@@ -79,6 +100,7 @@ def _generate_silent_mp3() -> bytes:
 
 _openai_client = None
 _elevenlabs_client = None
+_anthropic_client = None
 
 
 def _get_openai():
@@ -88,15 +110,23 @@ def _get_openai():
     return _openai_client
 
 
+def _get_anthropic():
+    global _anthropic_client
+    if _anthropic_client is None:
+        _anthropic_client = Anthropic()  # reads ANTHROPIC_API_KEY from env
+    return _anthropic_client
+
+
 def _get_elevenlabs():
     global _elevenlabs_client
     if _elevenlabs_client is None:
-        _elevenlabs_client = ElevenLabs()  # reads ELEVEN_API_KEY from env
+        api_key = (os.environ.get("ELEVENLABS_API_KEY") or "").strip()
+        _elevenlabs_client = ElevenLabs(api_key=api_key or None)  # pass explicitly so header is set
     return _elevenlabs_client
 
 
 # ---------------------------------------------------------------------------
-# Dialogue generation (OpenAI GPT-4o)
+# Dialogue generation (OpenAI GPT-4o or Claude)
 # ---------------------------------------------------------------------------
 
 
@@ -104,21 +134,35 @@ def generate_dialogue(
     config: AgentConfig,
     history: list[dict[str, str]],
 ) -> str:
-    """Generate a character's next line of dialogue using OpenAI."""
+    """Generate a character's next line of dialogue using OpenAI or Claude."""
     if MOCK_MODE:
         return _mock_dialogue(config)
 
-    messages = [
-        {"role": "system", "content": config.system_prompt},
-        *history,
-    ]
-    response = _get_openai().chat.completions.create(
-        model="gpt-4o",
-        messages=messages,
-        max_tokens=150,
-        temperature=0.9,
-    )
-    return response.choices[0].message.content.strip()
+    if _use_claude_for_dialogue():
+        # Claude requires at least one message; first turn has empty history.
+        messages = history if history else [
+            {"role": "user", "content": "The scene is set. You are first to speak. Deliver your opening line in character."},
+        ]
+        response = _get_anthropic().messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=150,
+            system=config.system_prompt,
+            messages=messages,
+            temperature=0.9,
+        )
+        return (response.content[0].text or "").strip()
+    else:
+        messages = [
+            {"role": "system", "content": config.system_prompt},
+            *history,
+        ]
+        response = _get_openai().chat.completions.create(
+            model="gpt-4o",
+            messages=messages,
+            max_tokens=150,
+            temperature=0.9,
+        )
+        return response.choices[0].message.content.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +185,16 @@ def _strip_stage_directions(text: str) -> str:
     return cleaned or text  # fallback to original if everything was stripped
 
 
+def _use_elevenlabs_for_zara() -> bool:
+    """Use ElevenLabs for Zara (when OpenAI TTS unavailable or preferred)."""
+    if _use_gtts():
+        return False
+    if os.environ.get("USE_ELEVENLABS_FOR_ALL_VOICES", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    # When using Claude for dialogue we don't use OpenAI; Zara must use ElevenLabs.
+    return _use_claude_for_dialogue()
+
+
 def synthesize_voice(text: str, config: AgentConfig) -> bytes:
     """Convert text to speech using the agent's configured TTS provider."""
     speech_text = _strip_stage_directions(text)
@@ -149,8 +203,12 @@ def synthesize_voice(text: str, config: AgentConfig) -> bytes:
     if MOCK_MODE:
         return _generate_silent_mp3()
 
+    if _use_gtts():
+        return _synthesize_gtts(speech_text)
     if config.tts_provider == TTSProvider.ELEVENLABS:
         return _synthesize_elevenlabs(speech_text, config.voice_id)
+    if config.tts_provider == TTSProvider.OPENAI and _use_elevenlabs_for_zara():
+        return _synthesize_elevenlabs(speech_text, ZARA_ELEVENLABS_VOICE_ID)
     return _synthesize_openai(speech_text, config.voice_id)
 
 
@@ -165,6 +223,15 @@ def _synthesize_elevenlabs(text: str, voice_id: str) -> bytes:
     )
     # The SDK returns an iterator of bytes chunks
     return b"".join(audio_iter)
+
+
+def _synthesize_gtts(text: str) -> bytes:
+    """Generate speech via Google TTS (free, no API key required)."""
+    import io
+    from gtts import gTTS
+    fp = io.BytesIO()
+    gTTS(text=text, lang="en").write_to_fp(fp)
+    return fp.getvalue()
 
 
 def _synthesize_openai(text: str, voice: str) -> bytes:
