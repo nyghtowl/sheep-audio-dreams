@@ -7,6 +7,7 @@ from enum import Enum
 class TTSProvider(Enum):
     ELEVENLABS = "elevenlabs"
     OPENAI = "openai"
+    GTTS = "gtts"
 
 
 @dataclass(frozen=True)

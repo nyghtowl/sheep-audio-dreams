@@ -16,13 +16,18 @@ logger = logging.getLogger(__name__)
 # Mock mode — auto-enabled when API keys are missing
 # ---------------------------------------------------------------------------
 
+def _use_gtts() -> bool:
+    return os.environ.get("USE_GTTS", "").strip().lower() in ("1", "true", "yes")
+
+
 def _has_api_keys() -> bool:
-    """At least one dialogue engine and ElevenLabs for voice."""
+    """At least one dialogue engine and one TTS provider."""
     openai_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
     anthropic_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
     eleven_key = (os.environ.get("ELEVENLABS_API_KEY") or "").strip()
     has_dialogue = bool(openai_key or anthropic_key)
-    return bool(has_dialogue and eleven_key)
+    has_tts = bool(eleven_key or _use_gtts())
+    return bool(has_dialogue and has_tts)
 
 
 def _use_claude_for_dialogue() -> bool:
@@ -182,6 +187,8 @@ def _strip_stage_directions(text: str) -> str:
 
 def _use_elevenlabs_for_zara() -> bool:
     """Use ElevenLabs for Zara (when OpenAI TTS unavailable or preferred)."""
+    if _use_gtts():
+        return False
     if os.environ.get("USE_ELEVENLABS_FOR_ALL_VOICES", "").strip().lower() in ("1", "true", "yes"):
         return True
     # When using Claude for dialogue we don't use OpenAI; Zara must use ElevenLabs.
@@ -196,6 +203,8 @@ def synthesize_voice(text: str, config: AgentConfig) -> bytes:
     if MOCK_MODE:
         return _generate_silent_mp3()
 
+    if _use_gtts():
+        return _synthesize_gtts(speech_text)
     if config.tts_provider == TTSProvider.ELEVENLABS:
         return _synthesize_elevenlabs(speech_text, config.voice_id)
     if config.tts_provider == TTSProvider.OPENAI and _use_elevenlabs_for_zara():
@@ -214,6 +223,15 @@ def _synthesize_elevenlabs(text: str, voice_id: str) -> bytes:
     )
     # The SDK returns an iterator of bytes chunks
     return b"".join(audio_iter)
+
+
+def _synthesize_gtts(text: str) -> bytes:
+    """Generate speech via Google TTS (free, no API key required)."""
+    import io
+    from gtts import gTTS
+    fp = io.BytesIO()
+    gTTS(text=text, lang="en").write_to_fp(fp)
+    return fp.getvalue()
 
 
 def _synthesize_openai(text: str, voice: str) -> bytes:
