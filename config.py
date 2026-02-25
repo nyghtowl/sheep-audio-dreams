@@ -10,6 +10,13 @@ class TTSProvider(Enum):
     GTTS = "gtts"
 
 
+class DialogueProvider(Enum):
+    OPENAI_AUDIO = "openai_audio"   # gpt-4o-audio-preview: audio in → audio out
+    GEMINI_AUDIO = "gemini_audio"   # gemini-2.0-flash-exp: audio in → audio out
+    CLAUDE_TEXT  = "claude_text"    # Claude text-only (existing path)
+    OPENAI_TEXT  = "openai_text"    # OpenAI GPT text-only (existing path)
+
+
 @dataclass(frozen=True)
 class AgentConfig:
     """Configuration for a D&D character agent."""
@@ -20,6 +27,10 @@ class AgentConfig:
     tts_provider: TTSProvider
     voice_id: str  # ElevenLabs voice ID or OpenAI voice name
     system_prompt: str
+    # Native speech fields (optional — defaults keep existing behaviour)
+    dialogue_provider: DialogueProvider = DialogueProvider.OPENAI_TEXT
+    dialogue_model: str = "gpt-4o"
+    native_voice: str = ""  # OpenAI voice name or Gemini voice name
 
 
 SCENARIO_CONTEXT = (
@@ -44,7 +55,7 @@ LYRA = AgentConfig(
     role="Half-Elf Ranger",
     color="#4a9e6d",
     tts_provider=TTSProvider.ELEVENLABS,
-    voice_id="9BWtsMINqrJLrRacOk9x",  # "Aria" voice
+    voice_id="9BWtsMINqrJLrRacOk9x",  # "Aria" voice (fallback TTS)
     system_prompt=(
         "You are Lyra, a half-elf ranger with a sharp eye and sharper tongue. "
         "You are practical, tactical, and speak in short punchy sentences. "
@@ -52,6 +63,9 @@ LYRA = AgentConfig(
         "and have a dry, deadpan sense of humor. You secretly care deeply about "
         "your companions but would never admit it.\n\n" + SCENARIO_CONTEXT
     ),
+    dialogue_provider=DialogueProvider.OPENAI_AUDIO,
+    dialogue_model="gpt-4o-audio-preview",
+    native_voice="alloy",
 )
 
 ZARA = AgentConfig(
@@ -59,7 +73,7 @@ ZARA = AgentConfig(
     role="Tiefling Sorceress",
     color="#9b59b6",
     tts_provider=TTSProvider.OPENAI,
-    voice_id="nova",  # OpenAI TTS voice
+    voice_id="nova",  # OpenAI TTS voice (fallback TTS)
     system_prompt=(
         "You are Zara, a tiefling sorceress with wild magic coursing through "
         "your veins. You are dramatic, impulsive, and absolutely love chaos. "
@@ -67,6 +81,9 @@ ZARA = AgentConfig(
         "You treat every encounter like it's the climax of an epic saga. "
         "Your familiar is a tiny fire salamander named Ember.\n\n" + SCENARIO_CONTEXT
     ),
+    dialogue_provider=DialogueProvider.GEMINI_AUDIO,
+    dialogue_model="gemini-2.0-flash-exp",
+    native_voice="Aoede",
 )
 
 # When using ElevenLabs for all voices (e.g. no OpenAI), Zara uses this voice.

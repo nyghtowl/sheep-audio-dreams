@@ -4,6 +4,7 @@ Demonstrates: Activities with automatic retries.
 If Claude or TTS fails transiently, Temporal retries automatically — no extra code needed.
 """
 
+import base64
 from datetime import timedelta
 
 from temporalio import activity, workflow
@@ -69,3 +70,47 @@ class GameTurnWorkflow:
         )
 
         return agent_name, dialogue, audio_bytes
+
+
+# ---------------------------------------------------------------------------
+# Native speech activity + workflow (audio-in → audio-out models)
+# ---------------------------------------------------------------------------
+
+@activity.defn
+async def generate_turn_audio_activity(
+    agent_name: str,
+    history: list[dict],
+    last_audio_b64: str | None,
+) -> dict:
+    """Single activity: generate dialogue + audio via native speech model.
+
+    Returns {"dialogue": str, "audio_b64": str}.
+    """
+    from config import AGENTS
+    from agents import generate_turn_audio
+    agent = next(a for a in AGENTS if a.name == agent_name)
+    last_audio = base64.b64decode(last_audio_b64) if last_audio_b64 else None
+    text, audio_bytes = generate_turn_audio(agent, history, last_audio)
+    return {
+        "dialogue": text,
+        "audio_b64": base64.b64encode(audio_bytes).decode(),
+    }
+
+
+@workflow.defn
+class NativeSpeechGameTurnWorkflow:
+    """One D&D turn using native speech models (dialogue + audio in a single activity call)."""
+
+    @workflow.run
+    async def run(
+        self,
+        agent_name: str,
+        history: list[dict],
+        last_audio_b64: str | None,
+    ) -> dict:
+        return await workflow.execute_activity(
+            generate_turn_audio_activity,
+            args=[agent_name, history, last_audio_b64],
+            start_to_close_timeout=timedelta(seconds=45),
+            retry_policy=RETRY_POLICY,
+        )

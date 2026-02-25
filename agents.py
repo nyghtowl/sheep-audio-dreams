@@ -1,14 +1,16 @@
 """Game logic, dialogue generation, and voice synthesis for D&D Voice Agents."""
 
+import base64
 import io
 import logging
 import os
 import random
 import re
 import struct
+import wave
 from pathlib import Path
 
-from config import AGENTS, DM_NARRATION, AgentConfig, TTSProvider, ZARA_ELEVENLABS_VOICE_ID
+from config import AGENTS, DM_NARRATION, AgentConfig, DialogueProvider, TTSProvider, ZARA_ELEVENLABS_VOICE_ID
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,8 @@ def _has_api_keys() -> bool:
     anthropic_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
     eleven_key = (os.environ.get("ELEVENLABS_API_KEY") or "").strip()
     has_dialogue = bool(openai_key or anthropic_key)
-    has_tts = bool(eleven_key or _use_gtts())
+    # OpenAI key covers both dialogue and TTS (gpt-4o-audio-preview does both in one call)
+    has_tts = bool(eleven_key or _use_gtts() or openai_key)
     return bool(has_dialogue and has_tts)
 
 
@@ -34,16 +37,18 @@ def _use_claude_for_dialogue() -> bool:
     return bool((os.environ.get("ANTHROPIC_API_KEY") or "").strip())
 
 
-MOCK_MODE = not _has_api_keys()
+def _force_mock() -> bool:
+    return os.environ.get("MOCK_MODE", "").strip() in ("1", "true", "yes")
+
+MOCK_MODE = not _has_api_keys() or _force_mock()
 
 if MOCK_MODE:
-    logger.warning("🎭 MOCK MODE — API keys not found. Using scripted dialogue and silent audio.")
+    logger.warning("🎭 MOCK MODE — API keys not found or MOCK_MODE=1. Using scripted dialogue and silent audio.")
 else:
     from elevenlabs import ElevenLabs
+    from openai import OpenAI  # needed for both GPT dialogue and gpt-4o-audio-preview
     if _use_claude_for_dialogue():
         from anthropic import Anthropic
-    else:
-        from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Pre-scripted mock dialogue lines per character
@@ -247,6 +252,163 @@ def _synthesize_openai(text: str, voice: str) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# Native speech helpers (audio-in → audio-out models)
+# ---------------------------------------------------------------------------
+
+_gemini_client = None
+
+
+def _has_gemini_key() -> bool:
+    return bool((os.environ.get("GEMINI_API_KEY") or "").strip())
+
+
+def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 24000) -> bytes:
+    """Wrap raw 16-bit mono PCM bytes in a WAV container."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16-bit
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm_bytes)
+    return buf.getvalue()
+
+
+def _get_gemini():
+    global _gemini_client
+    if _gemini_client is None:
+        from google import genai
+        _gemini_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    return _gemini_client
+
+
+def _generate_lyra_audio(
+    config: AgentConfig,
+    history: list[dict],
+    last_audio: bytes | None,
+) -> tuple[str, bytes]:
+    """Call gpt-4o-audio-preview. Lyra hears the previous character's voice.
+
+    Returns (transcript, wav_bytes).
+    """
+    context_text = "\n".join(e["content"] for e in history) if history else ""
+
+    user_content: list[dict] = []
+    if context_text:
+        user_content.append({
+            "type": "text",
+            "text": (
+                f"Previous exchanges in this adventure:\n{context_text}\n\n"
+                "React to the above and continue the story. It's your turn to speak."
+            ),
+        })
+    else:
+        user_content.append({
+            "type": "text",
+            "text": "The scene is set. You are first to speak. Deliver your opening line in character.",
+        })
+
+    if last_audio is not None:
+        user_content.append({
+            "type": "input_audio",
+            "input_audio": {
+                "data": base64.b64encode(last_audio).decode(),
+                "format": "wav",
+            },
+        })
+
+    response = _get_openai().chat.completions.create(
+        model=config.dialogue_model,
+        modalities=["text", "audio"],
+        audio={"voice": config.native_voice, "format": "wav"},
+        messages=[
+            {"role": "system", "content": config.system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+    )
+    msg = response.choices[0].message
+    wav_bytes = base64.b64decode(msg.audio.data)
+    transcript = (msg.audio.transcript or "").strip()
+    return transcript, wav_bytes
+
+
+def _generate_zara_audio(
+    config: AgentConfig,
+    history: list[dict],
+    last_audio: bytes | None,
+) -> tuple[str, bytes]:
+    """Call gemini-2.0-flash-exp with audio output. Zara hears the previous character's voice.
+
+    Returns (transcript_placeholder, wav_bytes).
+    """
+    from google import genai
+    from google.genai import types
+
+    context_text = "\n".join(e["content"] for e in history) if history else "The scene is set."
+
+    contents: list = []
+    if last_audio is not None:
+        contents.append(types.Part.from_bytes(last_audio, mime_type="audio/wav"))
+    contents.append(types.Part.from_text(
+        f"Prior context:\n{context_text}\n\n"
+        "Continue the dialogue as your character. Stay in character, 2-3 sentences max."
+    ))
+
+    response = _get_gemini().models.generate_content(
+        model=config.dialogue_model,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=config.system_prompt,
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                        voice_name=config.native_voice
+                    )
+                )
+            ),
+        ),
+    )
+    part = response.candidates[0].content.parts[0]
+    pcm_bytes = part.inline_data.data
+    wav_bytes = _pcm_to_wav(pcm_bytes)
+    return "[Zara speaks]", wav_bytes
+
+
+def generate_turn_audio(
+    config: AgentConfig,
+    history: list[dict],
+    last_audio: bytes | None,
+) -> tuple[str, bytes]:
+    """Generate dialogue + audio for a character's turn.
+
+    Routes to native speech models when configured; falls back to legacy
+    text+TTS pipeline otherwise.
+
+    Returns (text_transcript, audio_bytes).
+    """
+    if MOCK_MODE:
+        text = _mock_dialogue(config)
+        return text, _generate_silent_mp3()
+
+    provider = config.dialogue_provider
+
+    if provider == DialogueProvider.OPENAI_AUDIO:
+        logger.info("Native audio for %s via %s", config.name, config.dialogue_model)
+        return _generate_lyra_audio(config, history, last_audio)
+
+    if provider == DialogueProvider.GEMINI_AUDIO:
+        if _has_gemini_key():
+            logger.info("Native audio for %s via %s", config.name, config.dialogue_model)
+            return _generate_zara_audio(config, history, last_audio)
+        logger.warning("GEMINI_API_KEY not set — falling back to legacy TTS for %s", config.name)
+
+    # Legacy text + TTS path (CLAUDE_TEXT, OPENAI_TEXT, or Gemini fallback)
+    text = generate_dialogue(config, history)
+    audio = synthesize_voice(text, config)
+    return text, audio
+
+
+# ---------------------------------------------------------------------------
 # Dice rolling
 # ---------------------------------------------------------------------------
 
@@ -257,12 +419,12 @@ def roll_d20() -> int:
 
 
 def format_roll(result: int) -> str:
-    """Format a dice roll for display."""
+    """Format a dice roll for display (HTML)."""
     if result == 20:
-        return f"🎲 **NAT 20!** 🎉"
+        return "🎲 <b>NAT 20!</b> 🎉"
     if result == 1:
-        return f"🎲 **Critical fail...** (1)"
-    return f"🎲 Rolled a **{result}**"
+        return "🎲 <b>Critical fail...</b> (1)"
+    return f"🎲 Rolled a <b>{result}</b>"
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +441,7 @@ class GameSession:
         self.agents = AGENTS
         self.started: bool = False
         self.last_roll: str = ""
+        self.last_audio_bytes: bytes | None = None  # previous turn's audio (for native speech models)
 
     def get_opening(self) -> str:
         """Return the DM's opening narration."""
@@ -292,12 +455,12 @@ class GameSession:
             (character_name, dialogue_text, audio_bytes, dice_display)
         """
         agent = self.agents[self.turn_index % len(self.agents)]
-        logger.info("Generating dialogue for %s", agent.name)
+        logger.info("Generating turn for %s", agent.name)
 
-        # Generate dialogue
-        dialogue = generate_dialogue(agent, self.history)
+        # Generate dialogue + audio (native speech or legacy text+TTS path)
+        dialogue, audio_bytes = generate_turn_audio(agent, self.history, self.last_audio_bytes)
 
-        # Check for dice roll triggers — append result so the character speaks it
+        # Check for dice roll triggers — append result to text
         dice_display = ""
         roll_keywords = ["roll for", "roll a", "check", "saving throw", "nat "]
         if any(kw in dialogue.lower() for kw in roll_keywords):
@@ -310,9 +473,8 @@ class GameSession:
             else:
                 dialogue += f" That's a {result}."
 
-        # Synthesize voice (includes the spoken roll result)
-        logger.info("Synthesizing voice for %s via %s", agent.name, agent.tts_provider.value)
-        audio_bytes = synthesize_voice(dialogue, agent)
+        # Store audio so the next character can "hear" it
+        self.last_audio_bytes = audio_bytes
 
         # Update conversation history — the other agent sees this as a "user" message
         self.history.append({
