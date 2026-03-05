@@ -82,7 +82,7 @@ ZARA = AgentConfig(
         "Your familiar is a tiny fire salamander named Ember.\n\n" + SCENARIO_CONTEXT
     ),
     dialogue_provider=DialogueProvider.GEMINI_AUDIO,
-    dialogue_model="gemini-2.0-flash-exp",
+    dialogue_model="gemini-2.5-flash",  # text gen; TTS uses gemini-2.5-flash-preview-tts
     native_voice="Aoede",
 )
 

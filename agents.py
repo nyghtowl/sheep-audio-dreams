@@ -6,7 +6,6 @@ import logging
 import os
 import random
 import re
-import struct
 import wave
 from pathlib import Path
 
@@ -191,12 +190,13 @@ def _strip_stage_directions(text: str) -> str:
 
 
 def _use_elevenlabs_for_zara() -> bool:
-    """Use ElevenLabs for Zara (when OpenAI TTS unavailable or preferred)."""
+    """Use ElevenLabs for Zara's TTS — only if a key is actually available."""
     if _use_gtts():
         return False
+    if not (os.environ.get("ELEVENLABS_API_KEY") or "").strip():
+        return False  # no key, fall through to OpenAI TTS
     if os.environ.get("USE_ELEVENLABS_FOR_ALL_VOICES", "").strip().lower() in ("1", "true", "yes"):
         return True
-    # When using Claude for dialogue we don't use OpenAI; Zara must use ElevenLabs.
     return _use_claude_for_dialogue()
 
 
@@ -262,6 +262,11 @@ def _has_gemini_key() -> bool:
     return bool((os.environ.get("GEMINI_API_KEY") or "").strip())
 
 
+def _audio_format(audio_bytes: bytes) -> str:
+    """Detect audio format from header bytes (WAV vs MP3)."""
+    return "wav" if audio_bytes[:4] == b"RIFF" else "mp3"
+
+
 def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 24000) -> bytes:
     """Wrap raw 16-bit mono PCM bytes in a WAV container."""
     buf = io.BytesIO()
@@ -298,7 +303,7 @@ def _generate_lyra_audio(
             "type": "text",
             "text": (
                 f"Previous exchanges in this adventure:\n{context_text}\n\n"
-                "React to the above and continue the story. It's your turn to speak."
+                "React to the above and continue the story. ONE short sentence only. No stage directions."
             ),
         })
     else:
@@ -312,7 +317,7 @@ def _generate_lyra_audio(
             "type": "input_audio",
             "input_audio": {
                 "data": base64.b64encode(last_audio).decode(),
-                "format": "wav",
+                "format": _audio_format(last_audio),
             },
         })
 
@@ -336,42 +341,37 @@ def _generate_zara_audio(
     history: list[dict],
     last_audio: bytes | None,
 ) -> tuple[str, bytes]:
-    """Call gemini-2.0-flash-exp with audio output. Zara hears the previous character's voice.
+    """Gemini two-step: gemini-2.5-flash for dialogue text, gemini-2.5-flash-preview-tts for voice.
 
-    Returns (transcript_placeholder, wav_bytes).
+    Returns (dialogue_text, wav_bytes).
     """
-    from google import genai
     from google.genai import types
 
     context_text = "\n".join(e["content"] for e in history) if history else "The scene is set."
 
-    contents: list = []
-    if last_audio is not None:
-        contents.append(types.Part.from_bytes(last_audio, mime_type="audio/wav"))
-    contents.append(types.Part.from_text(
-        f"Prior context:\n{context_text}\n\n"
-        "Continue the dialogue as your character. Stay in character, 2-3 sentences max."
-    ))
-
-    response = _get_gemini().models.generate_content(
-        model=config.dialogue_model,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=config.system_prompt,
-            response_modalities=["AUDIO"],
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name=config.native_voice
-                    )
+    # Step 1: generate dialogue text — Gemini Flash with Claude fallback
+    try:
+        text_response = _get_gemini().models.generate_content(
+            model="gemini-2.5-flash",
+            contents=types.Part.from_text(
+                text=(
+                    f"Prior context:\n{context_text}\n\n"
+                    "Continue the dialogue as your character. ONE short sentence only. No stage directions."
                 )
             ),
-        ),
-    )
-    part = response.candidates[0].content.parts[0]
-    pcm_bytes = part.inline_data.data
-    wav_bytes = _pcm_to_wav(pcm_bytes)
-    return "[Zara speaks]", wav_bytes
+            config=types.GenerateContentConfig(
+                system_instruction=config.system_prompt,
+                max_output_tokens=120,
+            ),
+        )
+        transcript = text_response.text.strip()
+    except Exception as e:
+        logger.warning("Gemini text generation failed (%s) — falling back to Claude for Zara", e)
+        transcript = generate_dialogue(config, history)
+
+    # Step 2: synthesize Zara's voice with OpenAI TTS
+    audio_bytes = _synthesize_openai(transcript, config.voice_id)
+    return transcript, audio_bytes
 
 
 def generate_turn_audio(
@@ -462,8 +462,8 @@ class GameSession:
 
         # Check for dice roll triggers — append result to text
         dice_display = ""
-        roll_keywords = ["roll for", "roll a", "check", "saving throw", "nat "]
-        if any(kw in dialogue.lower() for kw in roll_keywords):
+        roll_keywords = ["roll", "saving throw", "nat 20", "nat 1", "critical", "d20", "initiative", "perception", "arcana"]
+        if any(kw in dialogue.lower() for kw in roll_keywords) or random.random() < 0.35:
             result = roll_d20()
             dice_display = format_roll(result)
             if result == 20:

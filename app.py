@@ -1,9 +1,25 @@
-"""Gradio UI for the D&D Voice Agents demo."""
+"""Gradio UI for the D&D Voice Agents demo.
 
+The app embeds a Temporal worker so every turn runs as a durable activity.
+When the Temporal server is running (temporal server start-dev), the full
+execution graph is visible at http://localhost:8233 as you play.
+
+If the Temporal server is not running, the app falls back to calling the
+agents directly — the UI still works, just without Temporal.
+"""
+
+import asyncio
+import base64
+import concurrent.futures
+import io
 import logging
 import os
+import random
 import tempfile
+import threading
 import time
+import uuid
+from datetime import timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -12,13 +28,14 @@ load_dotenv()  # Must load env vars BEFORE importing agents (which checks for AP
 
 import gradio as gr
 
-from agents import GameSession
+from agents import GameSession, format_roll, roll_d20
 from config import AGENTS, DM_NARRATION, DialogueProvider
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 ASSETS = Path(__file__).parent / "assets"
+TASK_QUEUE = "dnd-turns"
 
 # ---------------------------------------------------------------------------
 # Custom CSS — dark fantasy / parchment theme
@@ -91,10 +108,14 @@ CUSTOM_CSS = """
 .dice-display {
     text-align: center;
     font-family: 'MedievalSharp', cursive !important;
-    font-size: 1.4em;
+    font-size: 1.6em;
     color: var(--gold) !important;
-    min-height: 40px;
-    padding: 8px;
+    text-shadow: 0 0 8px rgba(226,180,77,0.8), 1px 1px 3px rgba(0,0,0,0.9);
+    background: rgba(226,180,77,0.08);
+    border: 1px solid rgba(226,180,77,0.25);
+    border-radius: 8px;
+    min-height: 48px;
+    padding: 10px 16px;
 }
 
 .control-btn {
@@ -151,10 +172,75 @@ footer { display: none !important; }
 """
 
 # ---------------------------------------------------------------------------
+# Embedded Temporal worker
+# ---------------------------------------------------------------------------
+
+from temporalio.client import Client
+from temporalio.worker import Worker
+from temporal_workflow import (
+    InteractiveGameWorkflow,
+    generate_dialogue_activity,
+    generate_turn_audio_activity,
+    synthesize_voice_activity,
+)
+
+_temporal_loop = asyncio.new_event_loop()
+_temporal_client: Client | None = None
+
+
+async def _start_embedded_worker() -> None:
+    """Connect to Temporal and start the worker as a background asyncio task."""
+    global _temporal_client
+    try:
+        _temporal_client = await Client.connect("localhost:7233")
+        worker = Worker(
+            _temporal_client,
+            task_queue=TASK_QUEUE,
+            workflows=[InteractiveGameWorkflow],
+            activities=[
+                generate_turn_audio_activity,
+                generate_dialogue_activity,
+                synthesize_voice_activity,
+            ],
+        )
+        asyncio.create_task(worker.run())
+        logger.info("Temporal worker embedded — watch http://localhost:8233")
+    except Exception as exc:
+        logger.warning("Temporal not reachable (%s) — turns run without Temporal", exc)
+
+
+def _run_temporal_loop() -> None:
+    asyncio.set_event_loop(_temporal_loop)
+    _temporal_loop.run_until_complete(_start_embedded_worker())
+    _temporal_loop.run_forever()
+
+
+threading.Thread(target=_run_temporal_loop, daemon=True, name="temporal-worker").start()
+
+
+def _temporal_run(coro, timeout: float = 90.0):
+    """Submit a coroutine to the Temporal background loop and block until done."""
+    return asyncio.run_coroutine_threadsafe(coro, _temporal_loop).result(timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
 # Helper to save audio bytes to a temp file for Gradio
 # ---------------------------------------------------------------------------
 
 _LATEST_AUDIO_PATHS: dict[str, str | None] = {"wav": None, "mp3": None}
+
+
+def _audio_duration_seconds(audio_bytes: bytes) -> float:
+    """Return audio duration in seconds (WAV exact, MP3 estimated at 128kbps)."""
+    if audio_bytes[:4] == b"RIFF":
+        try:
+            import wave as _wave
+            buf = io.BytesIO(audio_bytes)
+            with _wave.open(buf, "rb") as wf:
+                return wf.getnframes() / wf.getframerate()
+        except Exception:
+            pass
+    return len(audio_bytes) * 8 / 128_000
 
 
 def audio_bytes_to_path(audio_bytes: bytes) -> str:
@@ -209,6 +295,10 @@ def make_char_card(agent) -> str:
 # ---------------------------------------------------------------------------
 
 _DICE_IDLE = "<div class='dice-display'>🎲 Awaiting the first roll...</div>"
+_DICE_KEYWORDS = [
+    "roll", "saving throw", "nat 20", "nat 1", "critical",
+    "d20", "initiative", "perception", "arcana",
+]
 
 
 def _dice_html(dice: str) -> str:
@@ -218,29 +308,91 @@ def _dice_html(dice: str) -> str:
     return _DICE_IDLE
 
 
+def _apply_dice(dialogue: str) -> tuple[str, str]:
+    """Optionally append a dice roll to dialogue.
+
+    Returns (modified_dialogue, dice_html). Used for the Temporal path where
+    dice are applied client-side after receiving the workflow result.
+    """
+    if any(kw in dialogue.lower() for kw in _DICE_KEYWORDS) or random.random() < 0.35:
+        result = roll_d20()
+        suffix = {20: " That's a nat 20!", 1: " ...a one. Critical fail."}.get(
+            result, f" That's a {result}."
+        )
+        return dialogue + suffix, _dice_html(format_roll(result))
+    return dialogue, _DICE_IDLE
+
+
 # ---------------------------------------------------------------------------
 # Event handlers
 # ---------------------------------------------------------------------------
 
 
-def start_adventure(session: GameSession, chat_history: list):
-    """Handle the Start Adventure button click."""
+def start_adventure(session: GameSession, chat_history: list, workflow_id: str | None):
+    """Handle the Start Adventure button: show opening narration and start the workflow."""
     if session.started:
-        return session, chat_history, None, "", gr.update(interactive=False), gr.update(interactive=True)
+        return (
+            session, chat_history, None, _DICE_IDLE,
+            gr.update(interactive=False), gr.update(interactive=True),
+            gr.update(interactive=True), workflow_id,
+        )
 
     narration = session.get_opening()
     chat_history.append({"role": "assistant", "content": f"🎭 **Dungeon Master**\n\n{narration}"})
 
-    return session, chat_history, None, "", gr.update(interactive=False), gr.update(interactive=True)
+    # Start a Temporal workflow for this game session
+    new_workflow_id = None
+    if _temporal_client is not None:
+        agent_configs = [
+            {"name": a.name, "provider": a.dialogue_provider.value} for a in AGENTS
+        ]
+        new_workflow_id = f"dnd-game-{uuid.uuid4().hex[:8]}"
+        try:
+            _temporal_run(
+                _temporal_client.start_workflow(
+                    InteractiveGameWorkflow.run,
+                    args=[agent_configs],
+                    id=new_workflow_id,
+                    task_queue=TASK_QUEUE,
+                    execution_timeout=timedelta(hours=2),
+                )
+            )
+            logger.info("Started InteractiveGameWorkflow %s", new_workflow_id)
+        except Exception as exc:
+            logger.warning("Could not start Temporal workflow: %s — using direct mode", exc)
+            new_workflow_id = None
+
+    return (
+        session, chat_history, None, _DICE_IDLE,
+        gr.update(interactive=False), gr.update(interactive=True),
+        gr.update(interactive=True), new_workflow_id,
+    )
 
 
-def next_turn(session: GameSession, chat_history: list):
+def _get_turn(session: GameSession, workflow_id: str | None) -> tuple[str, str, bytes, str]:
+    """Execute one turn via Temporal if available, otherwise call agents directly.
+
+    Returns (agent_name, dialogue, audio_bytes, dice_html).
+    """
+    if workflow_id and _temporal_client is not None:
+        handle = _temporal_client.get_workflow_handle(workflow_id)
+        result = _temporal_run(handle.execute_update(InteractiveGameWorkflow.execute_turn))
+        dialogue, dice = _apply_dice(result["dialogue"])
+        audio_bytes = base64.b64decode(result["audio_b64"])
+        return result["agent"], dialogue, audio_bytes, dice
+
+    # Fallback: call agents directly (Temporal not available)
+    name, dialogue, audio_bytes, dice_raw = session.next_turn()
+    return name, dialogue, audio_bytes, _dice_html(dice_raw)
+
+
+def next_turn(session: GameSession, chat_history: list, workflow_id: str | None):
     """Handle the Next Turn button click."""
     if not session.started:
-        return session, chat_history, None, ""
+        return session, chat_history, None, _DICE_IDLE
 
     try:
-        name, dialogue, audio_bytes, dice = session.next_turn()
+        name, dialogue, audio_bytes, dice = _get_turn(session, workflow_id)
     except Exception as e:
         logger.exception("Error during turn generation")
         err_str = str(e).strip() or type(e).__name__
@@ -262,49 +414,68 @@ def next_turn(session: GameSession, chat_history: list):
             "role": "assistant",
             "content": f"⚠️ *The magical weave flickers... (API error)*\n\n{hint}\n\n<details><summary>Details</summary>\n`{err_str}`\n</details>",
         })
-        return session, chat_history, None, ""
+        return session, chat_history, None, _DICE_IDLE
 
-    # Find the agent config for color (fallback to first agent if name unknown)
     agent = next((a for a in AGENTS if a.name == name), AGENTS[0])
-
-    # Format the message with character color
     msg = f"**<span style='color:{agent.color}'>{name}</span>** ({agent.role})\n\n{dialogue}"
     chat_history.append({"role": "assistant", "content": msg})
-
     audio_path = audio_bytes_to_path(audio_bytes)
 
-    return session, chat_history, audio_path, _dice_html(dice)
+    return session, chat_history, audio_path, dice
 
 
 AUTO_TURNS = 12
-AUTO_DELAY = 5.0  # seconds between turns (rough estimate of audio playback time)
+AUTO_BUFFER = 1.5  # seconds of silence to add after audio finishes before next turn
 
 
-def auto_run(session: GameSession, chat_history: list):
-    """Generator: run turns automatically with a fixed pause between each."""
+def auto_run(session: GameSession, chat_history: list, workflow_id: str | None):
+    """Generator: prefetch next turn in background while current audio plays."""
     if not session.started:
         return
-    for _ in range(AUTO_TURNS):
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(_get_turn, session, workflow_id)
+
+    for i in range(AUTO_TURNS):
         try:
-            name, dialogue, audio_bytes, dice = session.next_turn()
+            name, dialogue, audio_bytes, dice = future.result()
         except Exception as e:
             logger.exception("Auto-run error")
             chat_history.append({
                 "role": "assistant",
                 "content": f"⚠️ *Auto-run stopped due to an error.*\n\n`{e}`",
             })
-            yield session, chat_history, None, ""
+            yield session, chat_history, None, _DICE_IDLE
+            executor.shutdown(wait=False)
             return
+
+        # Prefetch the next turn while this audio plays
+        if i < AUTO_TURNS - 1:
+            future = executor.submit(_get_turn, session, workflow_id)
+
         agent = next((a for a in AGENTS if a.name == name), AGENTS[0])
         msg = f"**<span style='color:{agent.color}'>{name}</span>** ({agent.role})\n\n{dialogue}"
         chat_history.append({"role": "assistant", "content": msg})
         audio_path = audio_bytes_to_path(audio_bytes)
-        yield session, chat_history, audio_path, _dice_html(dice)
-        time.sleep(AUTO_DELAY)
+        duration = _audio_duration_seconds(audio_bytes)
+        yield session, chat_history, audio_path, dice
+        time.sleep(duration + AUTO_BUFFER)
+
+    executor.shutdown(wait=False)
 
 
-def reset_game():
-    """Reset the session and UI back to the start screen."""
+def reset_game(workflow_id: str | None):
+    """Reset the session and UI. Ends the Temporal workflow if one is running."""
+    if workflow_id and _temporal_client is not None:
+        try:
+            _temporal_run(
+                _temporal_client.get_workflow_handle(workflow_id)
+                    .signal(InteractiveGameWorkflow.end_game)
+            )
+            logger.info("Sent end_game signal to workflow %s", workflow_id)
+        except Exception:
+            pass  # workflow may have already ended or timed out
+
     return (
         GameSession(),
         [],
@@ -313,6 +484,7 @@ def reset_game():
         gr.update(interactive=True),
         gr.update(interactive=False),
         gr.update(interactive=False),
+        None,  # clear workflow_id
     )
 
 
@@ -323,8 +495,8 @@ def reset_game():
 
 def build_app() -> gr.Blocks:
     with gr.Blocks(title="⚔️ The Wild Sheep Chase") as app:
-        # Session state
         session_state = gr.State(GameSession())
+        workflow_id_state = gr.State(None)
 
         # -- Header --
         gr.HTML("<h1 class='title-text'>⚔️ The Wild Sheep Chase ⚔️</h1>")
@@ -387,29 +559,33 @@ def build_app() -> gr.Blocks:
         # -- Wiring --
         start_btn.click(
             fn=start_adventure,
-            inputs=[session_state, chatbot],
-            outputs=[session_state, chatbot, audio_player, dice_display, start_btn, next_btn],
-        ).then(
-            fn=lambda: gr.update(interactive=True),
-            outputs=[auto_btn],
+            inputs=[session_state, chatbot, workflow_id_state],
+            outputs=[
+                session_state, chatbot, audio_player, dice_display,
+                start_btn, next_btn, auto_btn, workflow_id_state,
+            ],
         )
 
         next_btn.click(
             fn=next_turn,
-            inputs=[session_state, chatbot],
+            inputs=[session_state, chatbot, workflow_id_state],
             outputs=[session_state, chatbot, audio_player, dice_display],
         )
 
-        auto_btn.click(
+        auto_event = auto_btn.click(
             fn=auto_run,
-            inputs=[session_state, chatbot],
+            inputs=[session_state, chatbot, workflow_id_state],
             outputs=[session_state, chatbot, audio_player, dice_display],
         )
 
         reset_btn.click(
             fn=reset_game,
-            inputs=[],
-            outputs=[session_state, chatbot, audio_player, dice_display, start_btn, next_btn, auto_btn],
+            inputs=[workflow_id_state],
+            outputs=[
+                session_state, chatbot, audio_player, dice_display,
+                start_btn, next_btn, auto_btn, workflow_id_state,
+            ],
+            cancels=[auto_event],
         )
 
     return app

@@ -1,7 +1,11 @@
-"""Temporal workflow + activities for D&D turn generation.
+"""Temporal workflow + activities for the D&D Voice Agents demo.
 
-Demonstrates: Activities with automatic retries.
-If Claude or TTS fails transiently, Temporal retries automatically — no extra code needed.
+InteractiveGameWorkflow runs as a single durable workflow per game session.
+Each "Next Turn" click sends a Temporal Update that executes the character's
+activities and returns the result directly to the UI — no polling needed.
+
+The Temporal Web UI at http://localhost:8233 shows one workflow per game with
+activities appearing as nodes as each turn is taken.
 """
 
 import base64
@@ -12,12 +16,12 @@ from temporalio.common import RetryPolicy
 
 
 # ---------------------------------------------------------------------------
-# Activities — wrap the existing functions
+# Activities
 # ---------------------------------------------------------------------------
 
 @activity.defn
 async def generate_dialogue_activity(agent_name: str, history: list[dict]) -> str:
-    """Generate dialogue for a character. Auto-retried by Temporal on failure."""
+    """Generate dialogue text for a character. Auto-retried by Temporal on failure."""
     from config import AGENTS
     from agents import generate_dialogue
     agent = next(a for a in AGENTS if a.name == agent_name)
@@ -25,56 +29,14 @@ async def generate_dialogue_activity(agent_name: str, history: list[dict]) -> st
 
 
 @activity.defn
-async def synthesize_voice_activity(text: str, agent_name: str) -> bytes:
-    """Synthesize voice for text. Auto-retried by Temporal on failure."""
+async def synthesize_voice_activity(text: str, agent_name: str) -> str:
+    """Synthesize voice for text. Returns base64-encoded audio. Auto-retried by Temporal on failure."""
     from config import AGENTS
     from agents import synthesize_voice
     agent = next(a for a in AGENTS if a.name == agent_name)
-    return synthesize_voice(text, agent)
+    audio_bytes = synthesize_voice(text, agent)
+    return base64.b64encode(audio_bytes).decode()
 
-
-# ---------------------------------------------------------------------------
-# Workflow — orchestrates activities with retry policy
-# ---------------------------------------------------------------------------
-
-RETRY_POLICY = RetryPolicy(
-    initial_interval=timedelta(milliseconds=500),
-    backoff_coefficient=2.0,
-    maximum_interval=timedelta(seconds=10),
-    maximum_attempts=3,
-)
-
-
-@workflow.defn
-class GameTurnWorkflow:
-    """One complete D&D turn: generate dialogue → speak it aloud.
-
-    If either API call fails, Temporal retries automatically.
-    Visible in the Web UI at http://localhost:8233.
-    """
-
-    @workflow.run
-    async def run(self, agent_name: str, history: list[dict]) -> tuple[str, str, bytes]:
-        dialogue = await workflow.execute_activity(
-            generate_dialogue_activity,
-            args=[agent_name, history],
-            start_to_close_timeout=timedelta(seconds=30),
-            retry_policy=RETRY_POLICY,
-        )
-
-        audio_bytes = await workflow.execute_activity(
-            synthesize_voice_activity,
-            args=[dialogue, agent_name],
-            start_to_close_timeout=timedelta(seconds=30),
-            retry_policy=RETRY_POLICY,
-        )
-
-        return agent_name, dialogue, audio_bytes
-
-
-# ---------------------------------------------------------------------------
-# Native speech activity + workflow (audio-in → audio-out models)
-# ---------------------------------------------------------------------------
 
 @activity.defn
 async def generate_turn_audio_activity(
@@ -82,7 +44,10 @@ async def generate_turn_audio_activity(
     history: list[dict],
     last_audio_b64: str | None,
 ) -> dict:
-    """Single activity: generate dialogue + audio via native speech model.
+    """Single activity: generate dialogue + audio via native speech model (Lyra).
+
+    Lyra hears the previous character's actual audio before responding — one API call
+    handles both dialogue generation and voice synthesis.
 
     Returns {"dialogue": str, "audio_b64": str}.
     """
@@ -97,20 +62,99 @@ async def generate_turn_audio_activity(
     }
 
 
+# ---------------------------------------------------------------------------
+# Retry policy
+# ---------------------------------------------------------------------------
+
+RETRY_POLICY = RetryPolicy(
+    initial_interval=timedelta(milliseconds=500),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(seconds=10),
+    maximum_attempts=3,
+)
+
+
+# ---------------------------------------------------------------------------
+# Interactive game workflow — driven turn-by-turn from the Gradio UI
+# ---------------------------------------------------------------------------
+
 @workflow.defn
-class NativeSpeechGameTurnWorkflow:
-    """One D&D turn using native speech models (dialogue + audio in a single activity call)."""
+class InteractiveGameWorkflow:
+    """One game session driven by Temporal Updates from the UI.
+
+    Starts when the user clicks "Start Adventure" and stays alive until
+    "Start Over". Each "Next Turn" click sends a Temporal update that
+    executes the character's activities and returns the result directly
+    to the caller — no polling needed.
+
+    One workflow = one game in the Temporal Web UI. Activities appear as
+    nodes as each turn is taken.
+
+    Lyra's turns: one generate_turn_audio_activity (native audio, dialogue + voice in one call).
+    Zara's turns: generate_dialogue_activity then synthesize_voice_activity — two independent
+    nodes that each retry on their own if they fail.
+    """
+
+    def __init__(self):
+        self._agent_configs: list[dict] = []
+        self._history: list[dict] = []
+        self._last_audio_b64: str | None = None
+        self._turn_index: int = 0
+        self._finished: bool = False
 
     @workflow.run
-    async def run(
-        self,
-        agent_name: str,
-        history: list[dict],
-        last_audio_b64: str | None,
-    ) -> dict:
-        return await workflow.execute_activity(
-            generate_turn_audio_activity,
-            args=[agent_name, history, last_audio_b64],
-            start_to_close_timeout=timedelta(seconds=45),
-            retry_policy=RETRY_POLICY,
-        )
+    async def run(self, agent_configs: list[dict]) -> None:
+        self._agent_configs = agent_configs
+        # Stay alive until the user resets the game
+        await workflow.wait_condition(lambda: self._finished)
+
+    @workflow.update
+    async def execute_turn(self) -> dict:
+        """Execute one character turn. Called by each Next Turn click.
+
+        Returns {"turn": int, "agent": str, "dialogue": str, "audio_b64": str}.
+        """
+        cfg = self._agent_configs[self._turn_index % len(self._agent_configs)]
+        agent_name = cfg["name"]
+        provider = cfg["provider"]
+
+        if provider == "openai_audio":
+            result = await workflow.execute_activity(
+                generate_turn_audio_activity,
+                args=[agent_name, self._history, self._last_audio_b64],
+                start_to_close_timeout=timedelta(seconds=60),
+                retry_policy=RETRY_POLICY,
+            )
+            dialogue = result["dialogue"]
+            self._last_audio_b64 = result["audio_b64"]
+        else:
+            dialogue = await workflow.execute_activity(
+                generate_dialogue_activity,
+                args=[agent_name, self._history],
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RETRY_POLICY,
+            )
+            self._last_audio_b64 = await workflow.execute_activity(
+                synthesize_voice_activity,
+                args=[dialogue, agent_name],
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RETRY_POLICY,
+            )
+
+        self._history.append({
+            "role": "user",
+            "content": f"[{agent_name}]: {dialogue}",
+        })
+        self._turn_index += 1
+
+        return {
+            "turn": self._turn_index,
+            "agent": agent_name,
+            "dialogue": dialogue,
+            "audio_b64": self._last_audio_b64,
+        }
+
+    @workflow.signal
+    async def end_game(self) -> None:
+        """Signal the workflow to finish — sent when the user resets the game."""
+        self._finished = True

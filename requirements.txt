@@ -5,4 +5,5 @@ gradio>=4.0.0
 python-dotenv>=1.0.0
 google-genai>=0.8.0
 gtts>=2.3.0
-temporalio>=1.0.0
+temporalio>=1.4.0
+pytest>=8.0.0
