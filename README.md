@@ -36,12 +36,16 @@ Start with the REST demo. The code is straightforward, the Temporal execution gr
 
 ```bash
 cd rest
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example ../.env  # fill in your API keys
 
 # Terminal 1 — Temporal server
 temporal server start-dev
 
 # Terminal 2 — Gradio app
+source .venv/bin/activate
 python app.py
 ```
 
@@ -55,12 +59,16 @@ See [rest/README.md](rest/README.md) for full details.
 
 ```bash
 cd streaming
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+cp ../rest/.env.example ../.env  # fill in your API keys
 
 # Terminal 1 — Temporal server (shared with REST if both running)
 temporal server start-dev
 
 # Terminal 2 — FastAPI app
+source .venv/bin/activate
 python app.py
 ```
 
@@ -107,3 +115,13 @@ Both demos use a turn-by-turn model where each character fully completes before 
 4. **REST vs streaming** — REST makes the pieces legible; streaming makes the UX real
 
 ![Campaign end](assets/sheep-dnd-end.png)
+
+---
+
+## Resources
+
+- [Temporal](https://temporal.io?utm_source=github&utm_medium=readme&utm_campaign=nyghtowl) — durable execution platform used to orchestrate both demos
+- [OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime) — WebSocket speech model powering Lyra in the streaming demo
+- [Gemini Live](https://ai.google.dev/gemini-api/docs/live) — WebSocket speech model powering Zara in the streaming demo
+- [OpenAI Audio](https://platform.openai.com/docs/guides/audio) — `gpt-4o-audio-preview` used for Lyra in the REST demo
+- [Gradio](https://www.gradio.app) — UI framework for the REST demo
