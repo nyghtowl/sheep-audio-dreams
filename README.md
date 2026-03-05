@@ -12,91 +12,98 @@ Voice changes how people perceive AI. Audio adds an emotional dimension that tex
 
 [When Voice Agents Roll Initiative (PDF)](assets/SheShips_When_Voice_Agents_Roll_Initiative.pdf)
 
-## Quick Start
+---
+
+## Two Demos
+
+This repo contains two implementations of the same D&D scenario, showing the contrast between REST and streaming approaches.
+
+| | REST (`rest/`) | Streaming (`streaming/`) |
+|---|---|---|
+| **First audio** | 5–10s per turn | < 1s |
+| **Transport** | HTTP REST | WebSocket |
+| **UI** | Gradio | FastAPI + HTML |
+| **Lyra** | `gpt-4o-audio-preview` (REST) | `gpt-4o-realtime-preview` (WebSocket) |
+| **Zara** | `gemini-2.5-flash` text + OpenAI TTS | `gemini-2.0-flash-live-001` (WebSocket) |
+| **Temporal** | `InteractiveGameWorkflow` | `StreamingGameWorkflow` |
+| **Good for** | Understanding the pieces | Realistic production voice UX |
+
+Start with the REST demo. The code is straightforward, the Temporal execution graph is easy to read, and you can see every step. The streaming demo shows where the UX ends up once you add real-time audio delivery.
+
+---
+
+## REST Demo
 
 ```bash
-# 1. Create a virtual environment
-python -m venv .venv
-source .venv/bin/activate
-
-# 2. Install dependencies
+cd rest
 pip install -r requirements.txt
 
-# 3. Set up API keys in .env (see .env.example)
+# Terminal 1 — Temporal server
+temporal server start-dev
 
-# 4. Run the app
+# Terminal 2 — Gradio app
 python app.py
 ```
 
-Open http://localhost:7860 in your browser.
+Open http://localhost:7860. Temporal UI at http://localhost:8233.
+
+See [rest/README.md](rest/README.md) for full details.
+
+---
+
+## Streaming Demo
+
+```bash
+cd streaming
+pip install -r requirements.txt
+
+# Terminal 1 — Temporal server (shared with REST if both running)
+temporal server start-dev
+
+# Terminal 2 — FastAPI app
+python app.py
+```
+
+Open http://localhost:8000. Click **Start Adventure**, then **Next Turn** — Lyra's voice starts within a second.
+
+Temporal UI at http://localhost:8233 shows `StreamingGameWorkflow` with `streaming_turn_activity` nodes. Kill the server mid-turn and restart — the workflow resumes.
+
+---
 
 ## API Keys
 
-| Key | Used for | Required? |
-|-----|----------|-----------|
-| `OPENAI_API_KEY` | Lyra's native voice (`gpt-4o-audio-preview`) + Zara's TTS (`tts-1`) | Yes |
-| `ANTHROPIC_API_KEY` | Zara's dialogue (`claude-sonnet-4-6`) | Yes (for Zara) |
-| `GEMINI_API_KEY` | Zara's dialogue via `gemini-2.5-flash` (Gradio app only) | Optional, falls back to Claude |
-| `ELEVENLABS_API_KEY` | Alternative TTS for Zara | Optional |
+Copy `.env.example` from `rest/` and fill in:
 
-**No keys?** Set `MOCK_MODE=1` in `.env` to run with scripted lines and silent audio.
+| Key | REST | Streaming |
+|-----|------|-----------|
+| `OPENAI_API_KEY` | Lyra audio + Zara TTS | Lyra Realtime |
+| `ANTHROPIC_API_KEY` | Zara dialogue fallback | Not needed |
+| `GEMINI_API_KEY` | Zara dialogue | Zara Live |
+| `ELEVENLABS_API_KEY` | Optional Zara TTS | Not used |
 
-## How It Works
+**No keys?** Set `MOCK_MODE=1` in `.env` — REST demo only (streaming requires live API connections).
 
-### Voice Paths
+---
 
-| Character | Dialogue | Voice | Path |
-|-----------|----------|-------|------|
-| **Lyra** (Half-Elf Ranger) | `gpt-4o-audio-preview` | OpenAI native audio | Audio-in, Audio-out (one API call) |
-| **Zara** (Tiefling Sorceress) | `gemini-2.5-flash` (Claude fallback) | OpenAI TTS `tts-1/nova` | Text generation + separate TTS call |
+## How Temporal Works in Both Demos
 
-**Native speech** means each character passes the previous character's actual audio as input so the model hears the voice, not just the text.
+The Temporal server runs separately from the app in both demos. This is intentional: the app embeds the worker (the code that executes activities), but the server holds all workflow state independently. Kill the app mid-turn, restart it, and the workflow picks up exactly where it left off.
 
-### UI Features
+**REST**: each turn is a Temporal Update that runs one or two activities (dialogue + TTS), returns the full audio, and completes.
 
-- **Next Turn** — generate one turn manually
-- **Auto Run** — runs 12 turns automatically, duration-aware pacing between turns
-- **Start Over** — resets game state and cancels any running auto-run
+**Streaming**: each turn is a Temporal Update that runs `streaming_turn_activity`. The activity opens a WebSocket to the AI API, streams audio chunks into an `asyncio.Queue`, and heartbeats Temporal on every chunk. The FastAPI WebSocket handler reads from that queue and sends bytes to the browser in real time. Audio delivery is out-of-band from Temporal — Temporal tracks state and handles retries; the queue handles real-time delivery.
 
-## Temporal
-
-Temporal is embedded in the app — no separate worker process needed. Start the Temporal server, run the app, and every turn runs as a durable activity.
-
-```bash
-# Terminal 1 — Temporal server + Web UI
-temporal server start-dev
-
-# Terminal 2 — App (Gradio UI + embedded Temporal worker)
-python app.py
-```
-
-Watch the execution graph at http://localhost:8233 as you play.
-
-The Temporal server runs separately by design. The app embeds the worker (the code that executes activities), but the server holds all workflow state independently. This means you can kill `python app.py` mid-turn and the workflow survives — restart the app and it reconnects and picks up exactly where it left off. If both ran as one process, a crash would take the state with it and there would be nothing to recover.
-
-### Architecture
-
-```
-InteractiveGameWorkflow  (one per game session)
-  ├── generate_turn_audio_activity   ← Lyra's turn  (dialogue + voice in one call)
-  ├── generate_dialogue_activity     ← Zara's turn  (text generation)
-  │   synthesize_voice_activity      ←              (TTS)
-  ├── generate_turn_audio_activity   ← Lyra's turn
-  └── ...
-```
-
-One workflow per game. Activities appear in the execution graph as you click Next Turn. If the app crashes mid-activity, Temporal retries it automatically when the app restarts.
-
-Zara gets two activities because her turn makes two separate API calls (text + TTS). Splitting them means each retries independently — if TTS fails after dialogue succeeds, only TTS is retried.
+---
 
 ## A Note on Approach
 
-This demo uses a REST-based, turn-by-turn model where each character fully completes before the other responds. That's intentional: it keeps the code readable and makes the Temporal execution graph easy to follow. Modern production voice agents use WebSocket streaming (OpenAI Realtime API, Gemini Live) for sub-second first audio and interruption handling. This repo is a good starting point for understanding the pieces before adding streaming.
+Both demos use a turn-by-turn model where each character fully completes before the other responds. Modern production voice agents add interruption handling (one character cuts off the other mid-sentence) using the same WebSocket APIs shown here. This repo is a good starting point for understanding the pieces before adding that complexity.
 
 ## Key Takeaways
 
 1. **Personality via prompts** — system prompts give AI agents distinct characters
-2. **Native speech = richer interaction** — models hear voice, not just text; one API call does dialogue + TTS
+2. **Native speech = richer interaction** — models hear voice, not just text
 3. **Durable orchestration** — Temporal retries failures automatically and survives worker crashes
+4. **REST vs streaming** — REST makes the pieces legible; streaming makes the UX real
 
 ![Campaign end](assets/sheep-dnd-end.png)
