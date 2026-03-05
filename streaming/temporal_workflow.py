@@ -15,7 +15,6 @@ Key difference from the REST demo:
 """
 
 import asyncio
-import base64
 import logging
 from datetime import timedelta
 
@@ -42,7 +41,6 @@ RETRY_POLICY = RetryPolicy(
 async def streaming_turn_activity(
     agent_name: str,
     history: list[dict],
-    last_audio_b64: str | None,
     session_id: str,
 ) -> dict:
     """Stream one character turn and return the transcript.
@@ -50,6 +48,10 @@ async def streaming_turn_activity(
     Audio chunks are pushed into an in-process asyncio.Queue keyed by
     session_id. The FastAPI WebSocket handler reads from that queue and
     forwards bytes to the browser in real time.
+
+    Previous-turn audio is read from and written to app._last_audio (in-process
+    memory) so it never passes through Temporal serialisation. Temporal only
+    tracks text state: turn index, transcript history, session lifecycle.
 
     Heartbeats on every audio chunk so Temporal knows the activity is alive
     during the streaming connection (which can run 10-30s per turn).
@@ -64,27 +66,38 @@ async def streaming_turn_activity(
     from config import AGENTS
     from agents import streaming_turn
 
-    # _audio_queues lives in app.py (same process as the worker)
-    # Import lazily so this module doesn't require app.py at import time
+    # Both _audio_queues and _last_audio live in app.py (same process).
+    # Import lazily so this module doesn't require app.py at import time.
     try:
-        from app import _audio_queues
+        from app import _audio_queues, _last_audio
     except ImportError:
-        # Fallback for testing: use a local queue
+        # Fallback for testing: use local dicts
         _audio_queues = {}
+        _last_audio = {}
 
     agent = next(a for a in AGENTS if a.name == agent_name)
-    last_audio = base64.b64decode(last_audio_b64) if last_audio_b64 else None
+
+    # Read previous turn's audio from in-memory store (never serialized by Temporal)
+    last_audio = _last_audio.get(session_id)
 
     # On retry, reset the queue so stale chunks aren't replayed
     queue: asyncio.Queue = asyncio.Queue()
     _audio_queues[session_id] = queue
 
-    transcript = await streaming_turn(agent, history, last_audio, queue)
+    # Collect audio while streaming — audio_out captures a copy of every chunk
+    # so we can store it for the next character without re-reading the queue.
+    audio_out: list[bytes] = []
+    transcript = await streaming_turn(agent, history, last_audio, queue, audio_out=audio_out)
 
-    # Collect audio for passing to the next character (used as last_audio_b64)
-    # The queue was consumed by the WebSocket handler during the activity, so
-    # we capture audio separately via a collecting wrapper if needed. For now
-    # we return the transcript only — audio context passes via text history.
+    # Store this turn's audio for the next character (in-memory, not in Temporal).
+    # Cap at ~2s of PCM16 at 24kHz — Gemini Live rejects large inline audio blobs.
+    # Align to 2-byte boundary required by PCM16.
+    MAX_PASS_AUDIO = 96_000  # 2s × 24000 Hz × 2 bytes/sample
+    audio_bytes = b"".join(audio_out)[:MAX_PASS_AUDIO]
+    if len(audio_bytes) % 2:
+        audio_bytes = audio_bytes[:-1]
+    _last_audio[session_id] = audio_bytes if audio_bytes else None
+
     return {"transcript": transcript, "agent": agent_name}
 
 
@@ -131,7 +144,7 @@ class StreamingGameWorkflow:
 
         result = await workflow.execute_activity(
             streaming_turn_activity,
-            args=[agent_name, self._history, None, self._session_id],
+            args=[agent_name, self._history, self._session_id],
             start_to_close_timeout=timedelta(seconds=120),
             heartbeat_timeout=timedelta(seconds=10),
             retry_policy=RETRY_POLICY,
@@ -149,6 +162,11 @@ class StreamingGameWorkflow:
             "agent": agent_name,
             "transcript": transcript,
         }
+
+    @workflow.query
+    def get_turn_index(self) -> int:
+        """Return the current turn index — used by the server to sync state on reconnect."""
+        return self._turn_index
 
     @workflow.signal
     async def end_game(self) -> None:

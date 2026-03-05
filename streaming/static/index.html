@@ -3,74 +3,260 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>D&D Voice Agents — Streaming Demo</title>
+<title>⚔️ The Wild Sheep Chase — Streaming</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=MedievalSharp&family=Crimson+Text:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; min-height: 100vh; }
-  header { padding: 1.5rem 2rem; border-bottom: 1px solid #333; display: flex; align-items: center; gap: 1rem; }
-  header h1 { font-size: 1.25rem; font-weight: 600; }
-  header .badge { font-size: 0.7rem; background: #2d6a4f; color: #95d5b2; padding: 2px 8px; border-radius: 12px; }
-  .container { max-width: 860px; margin: 0 auto; padding: 2rem; }
-  .controls { display: flex; gap: 0.75rem; margin-bottom: 1.5rem; flex-wrap: wrap; align-items: center; }
-  button { padding: 0.5rem 1.25rem; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 500; transition: opacity 0.15s; }
-  button:disabled { opacity: 0.4; cursor: not-allowed; }
-  #btn-start { background: #2d6a4f; color: #fff; }
-  #btn-next  { background: #4a4e69; color: #fff; }
-  #btn-stop  { background: #6b2737; color: #fff; }
-  .status-bar { font-size: 0.8rem; color: #888; margin-left: auto; }
-  .speaking-indicator { display: none; align-items: center; gap: 0.5rem; font-size: 0.85rem; }
-  .speaking-indicator.active { display: flex; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; animation: pulse 1s infinite; }
-  .dot.lyra  { background: #4a9e6d; }
-  .dot.zara  { background: #9b59b6; }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
-  .narration { background: #16213e; border-left: 3px solid #e2b96f; padding: 1rem 1.25rem; border-radius: 4px; margin-bottom: 1.5rem; font-style: italic; color: #c9a84c; font-size: 0.9rem; line-height: 1.6; display: none; }
-  .chat { display: flex; flex-direction: column; gap: 0.75rem; }
-  .message { padding: 0.75rem 1rem; border-radius: 8px; max-width: 75%; font-size: 0.9rem; line-height: 1.5; }
-  .message.lyra  { background: #1a3a2a; border-left: 3px solid #4a9e6d; align-self: flex-start; }
-  .message.zara  { background: #2a1a3a; border-left: 3px solid #9b59b6; align-self: flex-end; }
-  .message .name { font-size: 0.7rem; font-weight: 600; margin-bottom: 0.25rem; opacity: 0.7; text-transform: uppercase; letter-spacing: 0.05em; }
-  .message.lyra .name { color: #4a9e6d; }
-  .message.zara .name { color: #9b59b6; }
+
+  :root {
+    --bg: #1a1a2e;
+    --bg-light: #16213e;
+    --gold: #e2b44d;
+    --text: #e0d6c8;
+    --lyra: #4a9e6d;
+    --zara: #9b59b6;
+  }
+
+  body {
+    font-family: 'Crimson Text', serif;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  .container {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 3rem;
+  }
+
+  /* ── Header ── */
+  .title {
+    font-family: 'MedievalSharp', cursive;
+    text-align: center;
+    color: var(--gold);
+    font-size: 2.4em;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+    margin-bottom: 0.25rem;
+  }
+  .subtitle {
+    text-align: center;
+    color: var(--text);
+    font-style: italic;
+    opacity: 0.8;
+    font-size: 1.1em;
+    margin-bottom: 1.5rem;
+  }
+  .badge-row {
+    text-align: center;
+    margin-bottom: 1.5rem;
+  }
+  .badge {
+    display: inline-block;
+    font-size: 0.75em;
+    font-family: monospace;
+    background: rgba(74,158,109,0.25);
+    color: #95d5b2;
+    padding: 3px 10px;
+    border-radius: 12px;
+    border: 1px solid rgba(74,158,109,0.4);
+  }
+
+  /* ── Character cards ── */
+  .char-cards {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+  .char-card {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(226,180,77,0.3);
+    border-radius: 12px;
+    padding: 1rem;
+    text-align: center;
+  }
+  .char-card h3 {
+    font-family: 'MedievalSharp', cursive;
+    color: var(--gold);
+    margin-bottom: 4px;
+  }
+  .char-card .role { font-style: italic; opacity: 0.75; font-size: 0.95em; }
+  .char-card .voice-badge {
+    display: inline-block;
+    font-size: 0.7em;
+    font-family: monospace;
+    padding: 2px 8px;
+    border-radius: 4px;
+    margin-top: 6px;
+  }
+  .lyra-badge { background: rgba(74,158,109,0.25); color: var(--lyra); }
+  .zara-badge { background: rgba(155,89,182,0.25); color: var(--zara); }
+
+  /* ── DM narration ── */
+  .narration {
+    background: rgba(22,33,62,0.8);
+    border-left: 3px solid var(--gold);
+    padding: 1rem 1.25rem;
+    border-radius: 4px;
+    margin-bottom: 1.5rem;
+    font-style: italic;
+    color: #c9a84c;
+    font-size: 0.95em;
+    line-height: 1.7;
+    display: none;
+  }
+
+  /* ── Adventure log ── */
+  .log-label {
+    font-family: 'MedievalSharp', cursive;
+    color: var(--gold);
+    font-size: 1em;
+    margin-bottom: 0.5rem;
+  }
+  .adventure-log {
+    border: 2px solid rgba(226,180,77,0.2);
+    border-radius: 12px;
+    background: rgba(0,0,0,0.3);
+    min-height: 320px;
+    max-height: 400px;
+    overflow-y: auto;
+    padding: 1rem;
+    margin-bottom: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .adventure-log:empty::before {
+    content: "📜 The adventure log awaits...";
+    color: rgba(224,214,200,0.3);
+    font-style: italic;
+    font-size: 0.95em;
+  }
+  .message {
+    padding: 0.65rem 1rem;
+    border-radius: 8px;
+    max-width: 78%;
+    font-size: 1.05em;
+    font-family: 'Crimson Text', serif;
+    line-height: 1.5;
+  }
+  .message.lyra  { background: rgba(74,158,109,0.12); border-left: 3px solid var(--lyra); align-self: flex-start; }
+  .message.zara  { background: rgba(155,89,182,0.12); border-left: 3px solid var(--zara); align-self: flex-end; }
+  .message .name { font-size: 0.7rem; font-weight: 600; margin-bottom: 0.25rem; opacity: 0.8; text-transform: uppercase; letter-spacing: 0.05em; font-family: monospace; }
+  .message.lyra .name { color: var(--lyra); }
+  .message.zara .name { color: var(--zara); }
   .message.typing .text::after { content: "▋"; animation: blink 0.7s infinite; }
   @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
-  .error-banner { background: #3a1a1a; border: 1px solid #6b2737; color: #e07070; padding: 0.75rem 1rem; border-radius: 6px; font-size: 0.85rem; margin-bottom: 1rem; display: none; }
+
+  /* ── Speaking indicator ── */
+  .speaking-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    min-height: 28px;
+    margin-bottom: 1rem;
+    font-family: 'Crimson Text', serif;
+    font-style: italic;
+    font-size: 0.95em;
+    color: var(--gold);
+  }
+  .speaking-bar.hidden { visibility: hidden; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; animation: pulse 1s infinite; flex-shrink: 0; }
+  .dot.lyra { background: var(--lyra); }
+  .dot.zara { background: var(--zara); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+  /* ── Controls ── */
+  .controls { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+  .btn {
+    font-family: 'MedievalSharp', cursive;
+    font-size: 1.1em;
+    padding: 10px 22px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+    flex: 1;
+    min-width: 130px;
+  }
+  .btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none !important; }
+  .btn:not(:disabled):hover { transform: translateY(-1px); }
+  .btn-start  { background: linear-gradient(135deg, #e2b44d, #c9952e); color: #1a1a2e; }
+  .btn-next   { background: linear-gradient(135deg, #4a9e6d, #3a7e5d); color: #fff; }
+  .btn-stop   { background: linear-gradient(135deg, #7b2d3e, #5a1f2c); color: #fff; }
+
+  /* ── Status / error ── */
+  .status { font-size: 0.8em; color: rgba(224,214,200,0.5); margin-top: 0.4rem; text-align: right; }
+  .error-banner {
+    background: rgba(58,26,26,0.9);
+    border: 1px solid #6b2737;
+    color: #e07070;
+    padding: 0.75rem 1rem;
+    border-radius: 6px;
+    font-size: 0.9em;
+    margin-bottom: 1rem;
+    display: none;
+  }
 </style>
 </head>
 <body>
-
-<header>
-  <span>⚔️</span>
-  <h1>D&D Voice Agents — The Wild Sheep Chase</h1>
-  <span class="badge">WebSocket Streaming</span>
-</header>
-
 <div class="container">
-  <div class="error-banner" id="error-banner"></div>
 
-  <div class="controls">
-    <button id="btn-start">Start Adventure</button>
-    <button id="btn-next" disabled>Next Turn</button>
-    <button id="btn-stop" disabled>Stop</button>
-    <div class="speaking-indicator" id="speaking-indicator">
-      <div class="dot" id="speaking-dot"></div>
-      <span id="speaking-name"></span> is speaking…
+  <h1 class="title">⚔️ The Wild Sheep Chase ⚔️</h1>
+  <p class="subtitle">Two AI adventurers. One enchanted sheep. Zero humans rolling dice.</p>
+  <div class="badge-row"><span class="badge">WebSocket Streaming</span></div>
+
+  <div class="char-cards">
+    <div class="char-card">
+      <h3>Lyra</h3>
+      <div class="role">Half-Elf Ranger</div>
+      <div class="voice-badge lyra-badge">gpt-4o-realtime-preview · alloy</div>
     </div>
-    <div class="status-bar" id="status">Not started</div>
+    <div class="char-card">
+      <h3>Zara</h3>
+      <div class="role">Tiefling Sorceress</div>
+      <div class="voice-badge zara-badge">gemini-2.5-flash-native-audio · Aoede</div>
+    </div>
   </div>
 
+  <div class="error-banner" id="error-banner"></div>
   <div class="narration" id="narration"></div>
-  <div class="chat" id="chat"></div>
+
+  <div class="log-label">📜 Adventure Log</div>
+  <div class="adventure-log" id="chat"></div>
+
+  <div class="speaking-bar hidden" id="speaking-bar">
+    <div class="dot" id="speaking-dot"></div>
+    <span id="speaking-name"></span> is speaking…
+  </div>
+
+  <div class="controls">
+    <button class="btn btn-start" id="btn-start">🏰 Start Adventure</button>
+    <button class="btn btn-next"  id="btn-next"  disabled>🎲 Next Turn</button>
+    <button class="btn btn-stop"  id="btn-stop"  disabled>⏹ Stop</button>
+  </div>
+  <div class="status" id="status">Not started</div>
+
 </div>
 
 <script>
-const sessionId = Math.random().toString(36).slice(2, 10);
-const ws = new WebSocket(`ws://${location.host}/ws/${sessionId}`);
-ws.binaryType = "arraybuffer";
+// Persist session ID in sessionStorage so a page refresh after a server crash
+// reconnects to the same Temporal workflow rather than starting a new one.
+// sessionStorage is tab-scoped (cleared on tab close), same-origin only, and
+// never sent in HTTP requests — appropriate for a transient session UUID.
+const sessionId = sessionStorage.getItem('dnd_session_id') || Math.random().toString(36).slice(2, 10);
+sessionStorage.setItem('dnd_session_id', sessionId);
+
+let ws;
+let intentionallyStopped = false;
+let reconnectAttempts = 0;
+let reconnectDelay = 1500;
+const MAX_RECONNECTS = 3;
 
 // Web Audio context — created on first user gesture to satisfy browser policy
 let audioCtx = null;
-// Queue of AudioBufferSourceNode scheduled ahead for gapless playback
 let nextStartTime = 0;
 const SAMPLE_RATE = 24000;
 
@@ -92,7 +278,6 @@ function playPCM16(arrayBuffer) {
   const src = ctx.createBufferSource();
   src.buffer = buffer;
   src.connect(ctx.destination);
-  // Schedule gaplessly: start at nextStartTime or now if we've fallen behind
   const when = Math.max(nextStartTime, ctx.currentTime);
   src.start(when);
   nextStartTime = when + buffer.duration;
@@ -118,19 +303,17 @@ function showError(msg) {
   const el = $("error-banner");
   el.textContent = msg;
   el.style.display = "block";
-  setTimeout(() => { el.style.display = "none"; }, 6000);
+  setTimeout(() => { el.style.display = "none"; }, 7000);
 }
 
 function setSpeaking(agentName) {
-  const ind = $("speaking-indicator");
-  const dot = $("speaking-dot");
-  const name = $("speaking-name");
+  const bar = $("speaking-bar");
   if (agentName) {
-    ind.classList.add("active");
-    dot.className = "dot " + agentName.toLowerCase();
-    name.textContent = agentName;
+    bar.classList.remove("hidden");
+    $("speaking-dot").className = "dot " + agentName.toLowerCase();
+    $("speaking-name").textContent = agentName;
   } else {
-    ind.classList.remove("active");
+    bar.classList.add("hidden");
   }
 }
 
@@ -152,78 +335,115 @@ function finaliseMessage(el, text) {
 }
 
 // ---------------------------------------------------------------------------
-// WebSocket message handling
+// WebSocket — connect() opens a socket and wires all handlers.
+// Called once on load, and again on reconnect after an unexpected close.
 // ---------------------------------------------------------------------------
 
-ws.onmessage = (event) => {
-  if (event.data instanceof ArrayBuffer) {
-    // Audio chunk — play it
-    playPCM16(event.data);
-    return;
-  }
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws/${sessionId}`);
+  ws.binaryType = "arraybuffer";
 
-  const msg = JSON.parse(event.data);
-
-  if (msg.type === "narration") {
-    const el = $("narration");
-    el.textContent = msg.text;
-    el.style.display = "block";
-
-  } else if (msg.type === "ready") {
-    $("btn-next").disabled = false;
-    $("btn-stop").disabled = false;
-    $("btn-start").disabled = true;
-    setStatus("Ready — click Next Turn");
-
-  } else if (msg.type === "turn_start") {
-    setSpeaking(msg.agent);
-    currentTypingEl = addMessage(msg.agent, "", true);
-    setStatus(`Turn ${msg.turn} — ${msg.agent} speaking`);
-
-  } else if (msg.type === "turn_done") {
-    setSpeaking(null);
-    if (currentTypingEl) {
-      finaliseMessage(currentTypingEl, msg.transcript || "");
-      currentTypingEl = null;
+  ws.onopen = () => {
+    reconnectAttempts = 0;
+    reconnectDelay = 1500;
+    // If a session was active before the disconnect, auto-rejoin it.
+    // The server calls _get_or_start_workflow which finds the existing
+    // Temporal workflow by session_id instead of creating a new one.
+    if (sessionStorage.getItem('dnd_active')) {
+      setStatus("Reconnecting to session…");
+      ws.send(JSON.stringify({ type: "start" }));
     } else {
-      addMessage(msg.agent, msg.transcript || "");
+      setStatus("Not started");
     }
-    setStatus(`Turn ${msg.turn} complete — click Next Turn`);
-    $("btn-next").disabled = false;
+  };
 
-  } else if (msg.type === "audio_done") {
-    // All audio for this turn has been sent
+  ws.onmessage = (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      playPCM16(event.data);
+      return;
+    }
+
+    const msg = JSON.parse(event.data);
+
+    if (msg.type === "narration") {
+      const el = $("narration");
+      el.textContent = msg.text;
+      el.style.display = "block";
+
+    } else if (msg.type === "ready") {
+      sessionStorage.setItem('dnd_active', '1');
+      $("btn-next").disabled = false;
+      $("btn-stop").disabled = false;
+      $("btn-start").disabled = true;
+      setStatus("Ready — click Next Turn");
+
+    } else if (msg.type === "turn_start") {
+      setSpeaking(msg.agent);
+      currentTypingEl = addMessage(msg.agent, "", true);
+      setStatus(`Turn ${msg.turn} — ${msg.agent} speaking`);
+
+    } else if (msg.type === "turn_done") {
+      setSpeaking(null);
+      if (currentTypingEl) {
+        finaliseMessage(currentTypingEl, msg.transcript || "");
+        currentTypingEl = null;
+      } else {
+        addMessage(msg.agent, msg.transcript || "");
+      }
+      setStatus(`Turn ${msg.turn} complete — click Next Turn`);
+      $("btn-next").disabled = false;
+
+    } else if (msg.type === "audio_done") {
+      setSpeaking(null);
+
+    } else if (msg.type === "turn_retrying") {
+      stopAudio();
+      setStatus("Connection dropped — retrying turn…");
+
+    } else if (msg.type === "stopped") {
+      stopAudio();
+      // Clean intentional stop — clear session so next load starts fresh
+      intentionallyStopped = true;
+      sessionStorage.removeItem('dnd_active');
+      sessionStorage.removeItem('dnd_session_id');
+      $("btn-next").disabled = true;
+      $("btn-stop").disabled = true;
+      $("btn-start").disabled = false;
+      setSpeaking(null);
+      setStatus("Stopped");
+
+    } else if (msg.type === "error") {
+      showError(msg.message);
+      $("btn-next").disabled = false;
+      setStatus("Error — try Next Turn again");
+    }
+  };
+
+  ws.onerror = () => showError("WebSocket error — is the server running?");
+
+  ws.onclose = () => {
+    if (intentionallyStopped) return;
     setSpeaking(null);
+    if (reconnectAttempts < MAX_RECONNECTS) {
+      reconnectAttempts++;
+      setStatus(`Disconnected — reconnecting (${reconnectAttempts}/${MAX_RECONNECTS})…`);
+      setTimeout(connect, reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 2, 8000);
+    } else {
+      setStatus("Could not reconnect — refresh the page");
+      sessionStorage.removeItem('dnd_active');
+    }
+  };
+}
 
-  } else if (msg.type === "turn_retrying") {
-    stopAudio();
-    setStatus("Connection dropped — retrying turn…");
-
-  } else if (msg.type === "stopped") {
-    stopAudio();
-    $("btn-next").disabled = true;
-    $("btn-stop").disabled = true;
-    $("btn-start").disabled = false;
-    setSpeaking(null);
-    setStatus("Stopped");
-
-  } else if (msg.type === "error") {
-    showError(msg.message);
-    $("btn-next").disabled = false;
-    setStatus("Error — try Next Turn again");
-  }
-};
-
-ws.onerror = () => showError("WebSocket error — is the server running?");
-ws.onclose = () => setStatus("Disconnected");
+connect();
 
 // ---------------------------------------------------------------------------
 // Button handlers
 // ---------------------------------------------------------------------------
 
 $("btn-start").addEventListener("click", () => {
-  // Resume AudioContext on user gesture
-  getAudioCtx();
+  getAudioCtx(); // resume AudioContext on user gesture
   $("btn-start").disabled = true;
   setStatus("Starting…");
   ws.send(JSON.stringify({ type: "start" }));

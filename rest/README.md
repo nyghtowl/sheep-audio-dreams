@@ -51,6 +51,10 @@ InteractiveGameWorkflow  (one per game session)
 
 The Temporal server runs separately by design — if the app crashes mid-turn, restart it and the workflow resumes exactly where it left off.
 
+**Audio stays out of workflow state** — the previous character's audio bytes live in an in-process dict (`_last_audio[session_id]`) rather than in Temporal's event log. Activities read the previous audio and write their own back to it directly. The workflow only serializes text state: turn index, transcript history, session lifecycle. If the server restarts between turns, the next character loses the audio input and uses text context only — the conversation continues, just without the voice inflection as context.
+
+**Keeping turns short** — dialogue length is controlled at the prompt level ("ONE short sentence only, no stage directions") and reinforced by `max_output_tokens` for the Gemini text generation step. Lyra's audio output length is prompt-only since `gpt-4o-audio-preview` doesn't expose a direct audio duration limit.
+
 ## UI Features
 
 - **Next Turn** — generate one turn manually

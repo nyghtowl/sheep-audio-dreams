@@ -18,7 +18,7 @@ Voice changes how people perceive AI. Audio adds an emotional dimension that tex
 
 **Streaming demo** — WebSocket connections to native speech models. Characters begin speaking within <1s. The same Temporal workflow wraps the session, but audio delivery is out-of-band: the activity streams PCM16 chunks into an asyncio.Queue while Temporal tracks state and handles retries. Both demos use a turn-by-turn model — modern production agents add interruption handling (one character cuts the other off mid-sentence) using the same WebSocket APIs shown here.
 
-**Voice** — both characters pass the previous character's actual audio as input, not just a text transcript. The models hear voice: tone, pacing, emotional cues. For Lyra, one API call handles both dialogue generation and speech synthesis. This is what makes native speech feel different from text-to-speech bolted on top.
+**Voice** — both characters pass the previous character's actual audio as input, not just a text transcript. The models hear voice: tone, pacing, emotional cues. For Lyra in the REST demo, one API call handles both dialogue generation and speech synthesis. Keeping responses short requires two layers: prompt-level instructions for both characters, and a hard byte cap on the streaming receive loop for Zara — native audio models don't expose a token limit for audio output, so without a cap the receive loop has no natural stopping point.
 
 **Temporal** — every turn runs as a durable activity in a single workflow per session. Crash the app mid-turn, restart it, and the workflow resumes exactly where it left off. See [How Temporal Works](#how-temporal-works) for what you'll see in the UI across both demos.
 
@@ -32,7 +32,7 @@ Voice changes how people perceive AI. Audio adds an emotional dimension that tex
 | **Transport** | HTTP REST | WebSocket |
 | **UI** | Gradio | FastAPI + HTML |
 | **Lyra** | `gpt-4o-audio-preview` (REST) | `gpt-4o-realtime-preview` (WebSocket) |
-| **Zara** | `gemini-2.5-flash` text + OpenAI TTS | `gemini-2.0-flash-live-001` (WebSocket) |
+| **Zara** | `gemini-2.5-flash` text + OpenAI TTS | `gemini-2.5-flash-native-audio` (WebSocket) |
 | **Temporal** | `InteractiveGameWorkflow` | `StreamingGameWorkflow` |
 | **Good for** | Understanding the pieces | Realistic production voice UX |
 
@@ -108,6 +108,8 @@ The Temporal server runs separately from the app in both demos. The app embeds t
 In the **REST demo**, each Next Turn click executes a Temporal Update. You'll see distinct activity nodes in the UI: one for Lyra (dialogue + voice in a single native audio call) and two for Zara (text generation, then TTS) — splitting them means each retries independently if one fails. If an API call hits a 429 rate limit, Temporal retries with exponential backoff and the workflow never fails.
 
 In the **streaming demo**, the same Update pattern applies but the activity runs longer — it holds an open WebSocket connection and heartbeats Temporal on every audio chunk. The UI shows `streaming_turn_activity` nodes with timing that reflects the actual stream duration. Audio delivery is out-of-band (asyncio.Queue → browser), so Temporal tracks state and durability without serialising megabytes of audio.
+
+**Keeping Temporal state lean** — Temporal's event log is built for small, serializable data: text transcripts, turn index, session lifecycle. Audio bytes don't belong there — they'd bloat the history and slow replay. Both demos store the previous character's raw audio in an in-process dict (`_last_audio[session_id]`) inside the app. Activities read from it and write back to it without Temporal ever seeing the bytes; the workflow only tracks text. The tradeoff: audio context doesn't survive a server crash (the next turn falls back to text-only context). The natural upgrade for production is to write audio to object storage and pass a URL through Temporal instead of the bytes.
 
 ---
 

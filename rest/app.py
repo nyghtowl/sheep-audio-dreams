@@ -227,6 +227,12 @@ def _temporal_run(coro, timeout: float = 90.0):
 # Helper to save audio bytes to a temp file for Gradio
 # ---------------------------------------------------------------------------
 
+# Previous turn's raw audio bytes — read by each activity as audio input for the
+# next character, written after each turn completes. Lives only in this process;
+# never serialized through Temporal. On crash+restart the next turn starts with
+# text-only context, which is fine.
+_last_audio: dict[str, bytes | None] = {}
+
 _LATEST_AUDIO_PATHS: dict[str, str | None] = {"wav": None, "mp3": None}
 
 
@@ -475,6 +481,7 @@ def reset_game(workflow_id: str | None):
             logger.info("Sent end_game signal to workflow %s", workflow_id)
         except Exception:
             pass  # workflow may have already ended or timed out
+    _last_audio.pop(workflow_id, None)
 
     return (
         GameSession(),

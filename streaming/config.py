@@ -6,7 +6,7 @@ from enum import Enum
 
 class DialogueProvider(Enum):
     OPENAI_REALTIME = "openai_realtime"  # gpt-4o-realtime-preview: WebSocket audio in/out
-    GEMINI_LIVE     = "gemini_live"      # gemini-2.0-flash-live-001: WebSocket audio in/out
+    GEMINI_LIVE     = "gemini_live"      # gemini-2.5-flash-native-audio: WebSocket audio in/out
 
 
 @dataclass(frozen=True)
@@ -31,7 +31,7 @@ SCENARIO_CONTEXT = (
     "You must protect the sheep and stop Noke.\n\n"
     "RULES FOR DIALOGUE:\n"
     "- Stay in character at ALL times.\n"
-    "- Keep each response to 2-3 sentences maximum.\n"
+    "- STRICT LENGTH LIMIT: 1-2 sentences maximum. Stop speaking after your second sentence.\n"
     "- Reference D&D mechanics naturally (e.g. 'I'll roll for perception', "
     "'I cast Detect Magic', 'That's a nat 20!').\n"
     "- React to what the other character just said or did.\n"
@@ -63,12 +63,13 @@ ZARA = AgentConfig(
     system_prompt=(
         "You are Zara, a tiefling sorceress with wild magic coursing through "
         "your veins. You are dramatic, impulsive, and absolutely love chaos. "
-        "You speak with theatrical flair and tend to over-explain your spells. "
-        "You treat every encounter like it's the climax of an epic saga. "
-        "Your familiar is a tiny fire salamander named Ember.\n\n" + SCENARIO_CONTEXT
+        "You speak with theatrical flair. "
+        "Your familiar is a tiny fire salamander named Ember. "
+        "IMPORTANT: Speak exactly 1-2 short sentences, then stop immediately. "
+        "Do not continue or elaborate after your second sentence.\n\n" + SCENARIO_CONTEXT
     ),
     dialogue_provider=DialogueProvider.GEMINI_LIVE,
-    dialogue_model="gemini-2.0-flash-live-001",
+    dialogue_model="gemini-2.5-flash-native-audio-preview-12-2025",
 )
 
 AGENTS: list[AgentConfig] = [LYRA, ZARA]

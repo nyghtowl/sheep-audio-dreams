@@ -29,12 +29,21 @@ async def generate_dialogue_activity(agent_name: str, history: list[dict]) -> st
 
 
 @activity.defn
-async def synthesize_voice_activity(text: str, agent_name: str) -> str:
-    """Synthesize voice for text. Returns base64-encoded audio. Auto-retried by Temporal on failure."""
+async def synthesize_voice_activity(text: str, agent_name: str, session_id: str) -> str:
+    """Synthesize voice for text. Returns base64-encoded audio. Auto-retried by Temporal on failure.
+
+    Also stores raw audio bytes in app._last_audio[session_id] so the next character can
+    hear this voice — audio never passes through Temporal serialisation.
+    """
     from config import AGENTS
     from agents import synthesize_voice
+    try:
+        from app import _last_audio
+    except ImportError:
+        _last_audio = {}
     agent = next(a for a in AGENTS if a.name == agent_name)
     audio_bytes = synthesize_voice(text, agent)
+    _last_audio[session_id] = audio_bytes
     return base64.b64encode(audio_bytes).decode()
 
 
@@ -42,20 +51,26 @@ async def synthesize_voice_activity(text: str, agent_name: str) -> str:
 async def generate_turn_audio_activity(
     agent_name: str,
     history: list[dict],
-    last_audio_b64: str | None,
+    session_id: str,
 ) -> dict:
     """Single activity: generate dialogue + audio via native speech model (Lyra).
 
-    Lyra hears the previous character's actual audio before responding — one API call
-    handles both dialogue generation and voice synthesis.
+    Reads the previous character's audio from app._last_audio[session_id] (in-process
+    memory) so it never passes through Temporal serialisation. Writes this turn's
+    audio back to _last_audio for the next character.
 
     Returns {"dialogue": str, "audio_b64": str}.
     """
     from config import AGENTS
     from agents import generate_turn_audio
+    try:
+        from app import _last_audio
+    except ImportError:
+        _last_audio = {}
     agent = next(a for a in AGENTS if a.name == agent_name)
-    last_audio = base64.b64decode(last_audio_b64) if last_audio_b64 else None
+    last_audio = _last_audio.get(session_id)
     text, audio_bytes = generate_turn_audio(agent, history, last_audio)
+    _last_audio[session_id] = audio_bytes
     return {
         "dialogue": text,
         "audio_b64": base64.b64encode(audio_bytes).decode(),
@@ -98,13 +113,15 @@ class InteractiveGameWorkflow:
     def __init__(self):
         self._agent_configs: list[dict] = []
         self._history: list[dict] = []
-        self._last_audio_b64: str | None = None
+        self._session_id: str = ""
         self._turn_index: int = 0
         self._finished: bool = False
 
     @workflow.run
     async def run(self, agent_configs: list[dict]) -> None:
         self._agent_configs = agent_configs
+        # Use the workflow ID as the session key for in-memory audio lookup
+        self._session_id = workflow.info().workflow_id
         # Stay alive until the user resets the game
         await workflow.wait_condition(lambda: self._finished)
 
@@ -121,12 +138,12 @@ class InteractiveGameWorkflow:
         if provider == "openai_audio":
             result = await workflow.execute_activity(
                 generate_turn_audio_activity,
-                args=[agent_name, self._history, self._last_audio_b64],
+                args=[agent_name, self._history, self._session_id],
                 start_to_close_timeout=timedelta(seconds=60),
                 retry_policy=RETRY_POLICY,
             )
             dialogue = result["dialogue"]
-            self._last_audio_b64 = result["audio_b64"]
+            audio_b64 = result["audio_b64"]
         else:
             dialogue = await workflow.execute_activity(
                 generate_dialogue_activity,
@@ -134,9 +151,9 @@ class InteractiveGameWorkflow:
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RETRY_POLICY,
             )
-            self._last_audio_b64 = await workflow.execute_activity(
+            audio_b64 = await workflow.execute_activity(
                 synthesize_voice_activity,
-                args=[dialogue, agent_name],
+                args=[dialogue, agent_name, self._session_id],
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RETRY_POLICY,
             )
@@ -151,7 +168,7 @@ class InteractiveGameWorkflow:
             "turn": self._turn_index,
             "agent": agent_name,
             "dialogue": dialogue,
-            "audio_b64": self._last_audio_b64,
+            "audio_b64": audio_b64,
         }
 
     @workflow.signal

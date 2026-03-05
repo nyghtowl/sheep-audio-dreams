@@ -112,7 +112,7 @@ async def mock_openai_realtime_connection(*args, **kwargs):
         for e in events:
             yield e
 
-    conn.__aiter__ = aiter_events
+    conn.__aiter__ = lambda self: aiter_events()
     yield conn
 
 

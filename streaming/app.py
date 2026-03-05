@@ -23,7 +23,6 @@ import logging
 import os
 import sys
 import threading
-import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -50,6 +49,16 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 # key: session_id → Queue of bytes (PCM16 chunks) or None (end-of-turn sentinel)
 _audio_queues: dict[str, asyncio.Queue] = {}
+
+# Previous turn's raw PCM bytes — read by each activity as audio input for the
+# next character, written after each turn completes. Lives only in this process;
+# never serialized through Temporal. On crash+restart the next turn starts with
+# text-only context, which is fine.
+_last_audio: dict[str, bytes | None] = {}
+
+# Turn index for Temporal-managed sessions (mirrors workflow._turn_index locally
+# so we can send turn_start before the blocking execute_turn call)
+_temporal_turn_index: dict[str, int] = {}
 
 # ---------------------------------------------------------------------------
 # Embedded Temporal worker
@@ -112,6 +121,34 @@ async def _start_workflow(session_id: str) -> str | None:
     return workflow_id
 
 
+async def _get_or_start_workflow(session_id: str) -> str | None:
+    """Return existing running workflow ID for this session, or start a fresh one.
+
+    On reconnect after a server crash the browser sends 'start' again with the
+    same session_id (persisted in sessionStorage). If Temporal still has a running
+    workflow for that session, we rejoin it — no new workflow is started.
+    """
+    if _temporal_client is None:
+        return None
+    workflow_id = f"dnd-streaming-{session_id}"
+    try:
+        handle = _temporal_client.get_workflow_handle(workflow_id)
+        desc = await handle.describe()
+        if desc.status.name == "RUNNING":
+            logger.info("Rejoining existing workflow %s", workflow_id)
+            return workflow_id
+    except Exception:
+        pass
+    return await _start_workflow(session_id)
+
+
+async def _get_workflow_turn_index(workflow_id: str) -> int:
+    """Query the workflow for its current turn index to sync the server's local counter."""
+    from temporal_workflow import StreamingGameWorkflow
+    handle = _temporal_client.get_workflow_handle(workflow_id)
+    return await handle.query(StreamingGameWorkflow.get_turn_index)
+
+
 async def _execute_turn(workflow_id: str) -> dict:
     from temporal_workflow import StreamingGameWorkflow
     handle = _temporal_client.get_workflow_handle(workflow_id)
@@ -163,15 +200,24 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             msg_type = msg.get("type")
 
             if msg_type == "start":
-                # Send opening narration, start workflow
+                # Send opening narration, start or rejoin workflow
                 await websocket.send_json({"type": "narration", "text": DM_NARRATION})
                 try:
-                    workflow_id = _temporal_run(
-                        asyncio.ensure_future(_start_workflow(session_id), loop=_temporal_loop),
-                        timeout=15,
+                    loop = asyncio.get_event_loop()
+                    workflow_id = await loop.run_in_executor(
+                        None, lambda: _temporal_run(_get_or_start_workflow(session_id), timeout=15)
                     )
+                    # On rejoin, sync local turn counter from the live workflow
+                    if workflow_id and _temporal_client:
+                        try:
+                            turn_idx = await loop.run_in_executor(
+                                None, lambda: _temporal_run(_get_workflow_turn_index(workflow_id), timeout=5)
+                            )
+                            _temporal_turn_index[session_id] = turn_idx
+                        except Exception:
+                            pass  # non-fatal — turn_start indicator may be off by one
                 except Exception as exc:
-                    logger.warning("Could not start workflow: %s", exc)
+                    logger.warning("Could not start/rejoin workflow: %s", exc)
                     workflow_id = None
                 await websocket.send_json({"type": "ready"})
 
@@ -180,10 +226,20 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     try:
                         # Reset the queue before each turn in case of retry
                         _audio_queues[session_id] = asyncio.Queue()
-                        result = _temporal_run(
-                            asyncio.ensure_future(_execute_turn(workflow_id), loop=_temporal_loop),
-                            timeout=120,
+                        # Notify the browser which character is about to speak
+                        # (before blocking on execute_turn so the indicator fires immediately)
+                        turn_index = _temporal_turn_index.get(session_id, 0)
+                        agent = AGENTS[turn_index % len(AGENTS)]
+                        await websocket.send_json({
+                            "type": "turn_start",
+                            "agent": agent.name,
+                            "turn": turn_index + 1,
+                        })
+                        loop = asyncio.get_event_loop()
+                        result = await loop.run_in_executor(
+                            None, lambda: _temporal_run(_execute_turn(workflow_id), timeout=120)
                         )
+                        _temporal_turn_index[session_id] = turn_index + 1
                         await websocket.send_json({
                             "type": "turn_done",
                             "agent": result["agent"],
@@ -200,20 +256,25 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             elif msg_type == "stop":
                 if workflow_id and _temporal_client:
                     try:
-                        _temporal_run(
-                            asyncio.ensure_future(_end_game(workflow_id), loop=_temporal_loop),
-                            timeout=10,
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(
+                            None, lambda: _temporal_run(_end_game(workflow_id), timeout=10)
                         )
                     except Exception:
                         pass
-                # Drain the audio queue
-                while not queue.empty():
-                    try:
-                        queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                queue.put_nowait(None)
+                # Drain the current active queue (may differ from initial `queue`
+                # after next_turn replaced _audio_queues[session_id] on retry)
+                active_queue = _audio_queues.get(session_id)
+                if active_queue:
+                    while not active_queue.empty():
+                        try:
+                            active_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    active_queue.put_nowait(None)
                 workflow_id = None
+                _temporal_turn_index.pop(session_id, None)
+                _last_audio.pop(session_id, None)
                 await websocket.send_json({"type": "stopped"})
 
     except WebSocketDisconnect:
@@ -223,13 +284,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         # Clean up: end workflow if still running
         if workflow_id and _temporal_client:
             try:
-                _temporal_run(
-                    asyncio.ensure_future(_end_game(workflow_id), loop=_temporal_loop),
-                    timeout=5,
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    None, lambda: _temporal_run(_end_game(workflow_id), timeout=5)
                 )
             except Exception:
                 pass
         _audio_queues.pop(session_id, None)
+        _temporal_turn_index.pop(session_id, None)
+        _last_audio.pop(session_id, None)
 
 
 async def _forward_audio(websocket: WebSocket, session_id: str) -> None:
@@ -267,10 +330,13 @@ async def _run_turn_direct(websocket: WebSocket, session_id: str, queue: asyncio
     history = _fallback_history.setdefault(session_id, [])
     turn_index = _fallback_turn_index.get(session_id, 0)
     agent = AGENTS[turn_index % len(AGENTS)]
-
     try:
-        transcript = await streaming_turn(agent, history, None, queue)
+        await websocket.send_json({"type": "turn_start", "agent": agent.name, "turn": turn_index + 1})
+        audio_out: list[bytes] = []
+        transcript = await streaming_turn(agent, history, _last_audio.get(session_id), queue, audio_out=audio_out)
         history.append({"role": "user", "content": f"[{agent.name}]: {transcript}"})
+        audio_bytes = b"".join(audio_out)
+        _last_audio[session_id] = audio_bytes if audio_bytes else None
         _fallback_turn_index[session_id] = turn_index + 1
         await websocket.send_json({
             "type": "turn_done",
