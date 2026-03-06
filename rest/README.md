@@ -2,7 +2,9 @@
 
 Turn-by-turn REST approach: click **Next Turn**, wait for a full turn to complete, hear the audio. Each turn is a complete HTTP request/response cycle. This is the right starting point for understanding how voice agent pieces fit together before adding streaming complexity.
 
-> **She Ships! — February 25, 2026** — This REST demo was the basis for the live demo at that talk ([slide deck PDF](../assets/SheShips_When_Voice_Agents_Roll_Initiative.pdf)). The repo has evolved since then: (1) the decorative dice animation became a real d20 mechanic — `workflow.random().randint(1, 20)` inside the Temporal workflow handler keeps rolls deterministic and replay-safe; (2) a DM narration activity (`claude-haiku-4-5` or `gpt-4o-mini`) generates one sentence describing the roll outcome, displayed at the top of the *next* turn so it lands as a beat between characters after the audio has played.
+> **She Ships! — February 25, 2026** — This REST demo was the basis for the live demo at that talk ([slide deck PDF](../assets/SheShips_When_Voice_Agents_Roll_Initiative.pdf)). The repo has evolved since then:
+> - The decorative dice animation became a real d20 mechanic — `workflow.random().randint(1, 20)` inside the Temporal workflow handler keeps rolls deterministic and replay-safe
+> - A DM narration activity (`claude-haiku-4-5` or `gpt-4o-mini`) generates one sentence describing the roll outcome, displayed at the top of the *next* turn so it lands as a beat between characters after the audio has played
 
 ## Quick Start
 
@@ -53,9 +55,11 @@ InteractiveGameWorkflow  (one per game session)
   └── ...
 ```
 
-**Workflow lifecycle** — one `InteractiveGameWorkflow` per game session. It starts when the user clicks **Start Adventure** and stays alive (waiting) until **Start Over** sends an `end_game` signal. Each **Next Turn** click sends a Temporal Update — a request/response call that runs the character's activities and returns the result directly to the caller, no polling needed.
+**Workflow lifecycle** — one `InteractiveGameWorkflow` per game session:
+- Starts when the user clicks **Start Adventure**, stays alive until **Start Over** sends an `end_game` signal
+- Each **Next Turn** click sends a Temporal Update — a request/response call that runs the character's activities and returns the result directly to the caller, no polling needed
 
-**How a click becomes an activity** — Gradio is synchronous but Temporal is async. The app runs a background thread with its own `asyncio` event loop dedicated to Temporal. When Next Turn fires, Gradio calls `asyncio.run_coroutine_threadsafe()` to hand the coroutine to that background loop, then blocks on `.result()` until the Update returns. The result (dialogue text, DM text, audio file path) comes back to Gradio and the UI updates.
+**How a click becomes an activity** — Gradio is synchronous but Temporal is async:
 
 ```
 Next Turn click
@@ -67,13 +71,21 @@ Next Turn click
   ← blocks on .result() ← Gradio displays result
 ```
 
+The app runs a background thread with its own `asyncio` event loop dedicated to Temporal. When Next Turn fires, Gradio calls `asyncio.run_coroutine_threadsafe()` to hand the coroutine to that background loop, then blocks on `.result()` until the Update returns.
+
 The Temporal server runs separately by design — if the app crashes mid-turn, restart it and the workflow resumes exactly where it left off.
 
-**Audio stays out of workflow state** — the previous character's audio bytes live in an in-process dict (`_last_audio[session_id]`) rather than in Temporal's event log. Activities read the previous audio and write their own back to it directly. The workflow only serializes text state: turn index, transcript history, session lifecycle. If the server restarts between turns, the next character loses the audio input and uses text context only — the conversation continues, just without the voice inflection as context.
+**Audio stays out of workflow state** — the previous character's audio bytes live in an in-process dict (`_last_audio[session_id]`) rather than in Temporal's event log:
+- Activities read the previous audio and write their own back to it directly
+- The workflow only serializes text state: turn index, transcript history, session lifecycle
+- If the server restarts between turns, the next character loses audio input and uses text context only — the conversation continues, just without the voice inflection as context
 
 **Why `_shared_state.py` exists** — `_last_audio` needs to be the same dict object in both `app.py` and `temporal_workflow.py`. If `temporal_workflow.py` did `from app import _last_audio`, Python would re-import `app.py` as a fresh module (since `app.py` ran as `__main__`, not `app`) and create a second empty dict — the activity would write audio bytes to one dict while the UI reads from a different one. Putting the dict in a neutral `_shared_state.py` module avoids this: neither file is `__main__`, Python always returns the cached module, and both sides share the exact same dict.
 
-**Keeping turns short** — dialogue length is controlled at the prompt level ("ONE short sentence only, no stage directions") and reinforced by `max_output_tokens` for the Gemini text generation step. Lyra's audio output length is prompt-only since `gpt-4o-audio-preview` doesn't expose a direct audio duration limit.
+**Keeping turns short** — dialogue length is controlled at two levels:
+- Prompt instructions tell both characters to speak in one short sentence, no stage directions
+- `max_output_tokens` caps the Gemini text generation step for Zara
+- Lyra's audio output length is prompt-only since `gpt-4o-audio-preview` doesn't expose a direct audio duration limit
 
 ## Tests
 
@@ -87,6 +99,6 @@ MOCK_MODE=1 python -m pytest rest/tests/ -v
 
 ## UI Features
 
-- **Next Turn** — generate one turn manually. The previous turn's DM dice reaction (🎲) appears first, then the current character speaks — so the DM beat lands between characters rather than interrupting audio.
+- **Next Turn** — generate one turn manually. The previous turn's DM dice reaction (🎲) appears first, then the current character speaks — so the DM beat lands between characters rather than interrupting audio
 - **Auto Run** — runs 12 turns automatically, duration-aware pacing
 - **Start Over** — resets game state

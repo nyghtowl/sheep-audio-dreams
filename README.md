@@ -6,19 +6,29 @@ The scenario: a wizard got polymorphed into a sheep by her evil apprentice and j
 
 ![Campaign start](assets/sheep-dnd-start.png)
 
-Today's voice agents aren't just answering questions — they're completing work. Agents are already conducting live outbound sales calls, updating CRM databases, and booking appointments without human intervention. Latency has dropped below 500 milliseconds, faster than the average human reaction time, eliminating the awkward pauses that made early AI conversations feel unnatural. These systems read the room: if a user sounds frustrated, the AI detects it and dynamically shifts tone with no human needed to intervene. Voice is also no longer a standalone channel — it's multimodal, multilingual, and increasingly paired with visual interfaces. And with tool use, agents don't just talk: they query systems, trigger workflows, and solve real problems in real time.
+Today's voice agents aren't just answering questions — they're completing work:
 
-Voice changes how people perceive AI. Audio adds an emotional dimension that text alone can't replicate, which means the bar for getting it right is higher. Models aren't game engines — they generate proposals, not authoritative truth. Every dice roll and state update is owned by the app code, not left to the model to improvise. And autonomy doesn't automatically mean reliability: the more agents you coordinate, the more structure you need underneath them. That's what Temporal provides here.
+- Latency has dropped below 500ms — faster than the average human reaction time, eliminating the awkward pauses that made early AI conversations feel unnatural
+- These systems read the room: if a user sounds frustrated, the AI detects it and dynamically shifts tone with no human needed to intervene
+- Voice is no longer a standalone channel — it's multimodal, multilingual, and increasingly paired with visual interfaces
+- With tool use, agents don't just talk: they query systems, trigger workflows, and solve real problems in real time
+
+Voice changes how people perceive AI. Audio adds an emotional dimension that text alone can't replicate — which means the bar for getting it right is higher. A few things to keep in mind:
+
+- Models aren't game engines — they generate proposals, not authoritative truth. Every dice roll and state update is owned by the app code, not left to the model to improvise
+- Autonomy doesn't automatically mean reliability: the more agents you coordinate, the more structure you need underneath them. That's what Temporal provides here
 
 ---
 
 ## What This Demo Shows
 
-**REST demo** — turn-by-turn request/response model. Each character fully completes before the other responds. After each turn a Dungeon Master voice (Claude Haiku or GPT-4o-mini) narrates the outcome of a d20 roll in one punchy sentence — the DM text appears at the top of the next turn so it reads as a beat between characters, not an interruption. The code is straightforward, the Temporal execution graph is easy to read, and you can see every step. The right place to start before adding streaming complexity.
+**REST demo** — turn-by-turn request/response model. Each character fully completes before the other responds. After each turn a Dungeon Master (Claude Haiku or GPT-4o-mini) narrates the d20 roll outcome in one punchy sentence. The code is straightforward, the Temporal execution graph is easy to read, and every step is visible. The right place to start before adding streaming complexity.
 
-**Streaming demo** — WebSocket connections to native speech models. Characters begin speaking within <1s. The same Temporal workflow wraps the session, but audio delivery is out-of-band: the activity streams PCM16 chunks into an asyncio.Queue while Temporal tracks state and handles retries. Both demos use a turn-by-turn model — modern production agents add interruption handling (one character cuts the other off mid-sentence) using the same WebSocket APIs shown here.
+**Streaming demo** — WebSocket connections to native speech models. Characters begin speaking within <1s. The same Temporal workflow wraps the session, but audio delivery is out-of-band: the activity streams PCM16 chunks into an asyncio.Queue while Temporal tracks state and handles retries. Modern production agents add interruption handling (one character cuts the other off mid-sentence) using the same WebSocket APIs shown here.
 
-**Voice** — both characters pass the previous character's actual audio as input, not just a text transcript. The models hear voice: tone, pacing, emotional cues. For Lyra in the REST demo, one API call handles both dialogue generation and speech synthesis. Keeping responses short requires two layers: prompt-level instructions for both characters, and a hard byte cap on the streaming receive loop for Zara — native audio models don't expose a token limit for audio output, so without a cap the receive loop has no natural stopping point.
+**Voice** — both characters pass the previous character's actual audio as input, not just a text transcript. The models hear voice: tone, pacing, emotional cues. Keeping responses short requires two layers:
+- Prompt-level instructions for both characters
+- A hard byte cap on the streaming receive loop for Zara — native audio models don't expose a token limit for audio output, so without a cap the receive loop has no natural stopping point
 
 **Temporal** — every turn runs as a durable activity in a single workflow per session. Crash the app mid-turn, restart it, and the workflow resumes exactly where it left off. See [How Temporal Works](#how-temporal-works) for what you'll see in the UI across both demos.
 
@@ -28,13 +38,15 @@ Voice changes how people perceive AI. Audio adds an emotional dimension that tex
 
 | | REST (`rest/`) | Streaming (`streaming/`) |
 |---|---|---|
-| **First audio** | 5–10s per turn | < 1s |
+| **First audio** | 5–10s per turn | Lyra ~1s / Zara 7–10s* |
 | **Transport** | HTTP REST | WebSocket |
 | **UI** | Gradio | FastAPI + HTML |
 | **Lyra** | `gpt-4o-audio-preview` (REST) | `gpt-4o-realtime-preview` (WebSocket) |
 | **Zara** | `gemini-2.5-flash` text + OpenAI TTS | `gemini-2.5-flash-native-audio` (WebSocket) |
 | **Temporal** | `InteractiveGameWorkflow` | `StreamingGameWorkflow` |
 | **Good for** | Understanding the pieces | Realistic production voice UX |
+
+*Zara's latency reflects the connection-per-turn cost of Temporal's activity model — a new WebSocket handshake opens every turn. With connection pre-warming or a persistent session this could match Lyra's ~1s. See [How Temporal Works](#how-temporal-works).
 
 ---
 
@@ -105,17 +117,28 @@ Copy `.env.example` and fill in:
 
 The Temporal server runs separately from the app in both demos. The app embeds the worker (the code that executes activities), but the server holds all workflow state independently. Kill the app mid-turn, restart it, and the workflow picks up exactly where it left off — same turn, same state.
 
-In the **REST demo**, each Next Turn click executes a Temporal Update. You'll see distinct activity nodes in the UI: one for Lyra (dialogue + voice in a single native audio call), one for Zara (Gemini text + OpenAI TTS combined), and one `generate_dm_reaction_activity` that narrates the d20 roll outcome using Claude Haiku or GPT-4o-mini. If an API call hits a 429 rate limit, Temporal retries with exponential backoff and the workflow never fails.
+**REST demo** — each Next Turn click executes a Temporal Update. Distinct activity nodes appear in the UI:
+- One for Lyra (dialogue + voice in a single native audio call)
+- One for Zara (Gemini text + OpenAI TTS combined)
+- One `generate_dm_reaction_activity` that narrates the d20 roll outcome
 
-In the **streaming demo**, the same Update pattern applies but the activity runs longer — it holds an open WebSocket connection and heartbeats Temporal on every audio chunk. The UI shows `streaming_turn_activity` nodes with timing that reflects the actual stream duration. Audio delivery is out-of-band (asyncio.Queue → browser), so Temporal tracks state and durability without serialising megabytes of audio.
+If an API call hits a 429 rate limit, Temporal retries with exponential backoff and the workflow never fails.
 
-**Streaming latency and the connection-per-turn tradeoff** — Lyra's turns start within ~1s. Zara's turns take 7–10s before the first audio arrives. The gap comes from a fundamental tension between Temporal's activity model and persistent WebSocket connections.
+**Streaming demo** — the same Update pattern applies but the activity runs longer: it holds an open WebSocket connection and heartbeats Temporal on every audio chunk. The UI shows `streaming_turn_activity` nodes with timing that reflects the actual stream duration. Audio delivery is out-of-band (asyncio.Queue → browser), so Temporal tracks state and durability without serialising megabytes of audio.
 
-Temporal activities are designed to be stateless and retryable: if one fails mid-turn, Temporal spins up a fresh execution. A live WebSocket connection can't be serialized into Temporal's state, so the cleanest mapping is to open a fresh connection at the start of each activity and close it when the turn completes. That means every Zara turn pays the full cost of TLS handshake + session negotiation with Gemini Live (~2–4s), plus the model's own time-to-first-audio (~3–5s for the current preview model).
+**Streaming latency and the connection-per-turn tradeoff** — Lyra's turns start within ~1s. Zara's turns take 7–10s before the first audio arrives. The gap comes from a fundamental tension between Temporal's activity model and persistent WebSocket connections:
 
-Persisting the connection across turns would hide that setup cost but requires storing the session object outside Temporal (in process memory, keyed by `session_id`) and then re-implementing the retry semantics that Temporal otherwise provides for free: health checks, reconnect on idle timeout, and ensuring retried activities get a fresh connection rather than a half-written stale one. In this demo the tradeoff favors simplicity — the activity boundary stays clean, retries work automatically, and the latency difference is a useful illustration of the cost. The natural optimization for production is to pre-warm Zara's connection during Lyra's turn so the handshake is already complete when Zara's activity starts.
+- Temporal activities are stateless and retryable — if one fails mid-turn, Temporal spins up a fresh execution
+- A live WebSocket connection can't be serialized into Temporal's state, so the cleanest mapping is to open a fresh connection at the start of each activity and close it when the turn completes
+- Every Zara turn pays the full cost of TLS handshake + session negotiation with Gemini Live (~2–4s), plus the model's own time-to-first-audio (~3–5s for the current preview model)
 
-**Keeping Temporal state lean** — Temporal's event log is built for small, serializable data: text transcripts, turn index, session lifecycle. Audio bytes don't belong there — they'd bloat the history and slow replay. Both demos store the previous character's raw audio in an in-process dict (`_last_audio[session_id]`) inside the app. Activities read from it and write back to it without Temporal ever seeing the bytes; the workflow only tracks text. The tradeoff: audio context doesn't survive a server crash (the next turn falls back to text-only context). The natural upgrade for production is to write audio to object storage and pass a URL through Temporal instead of the bytes.
+Persisting the connection across turns would hide that setup cost, but requires storing the session outside Temporal and manually re-implementing the retry semantics Temporal provides for free (health checks, reconnect on idle timeout, handling stale connections on retry). In this demo the tradeoff favors simplicity. The natural optimization for production is to pre-warm Zara's connection during Lyra's turn so the handshake is already complete when Zara's activity starts.
+
+**Keeping Temporal state lean** — Temporal's event log is built for small, serializable data: text transcripts, turn index, session lifecycle. Audio bytes don't belong there — they'd bloat the history and slow replay. Both demos store the previous character's raw audio in an in-process dict (`_last_audio[session_id]`) inside the app:
+- Activities read the previous audio and write their own back directly
+- The workflow only tracks text state
+- If the server restarts between turns, the next character loses audio context and falls back to text-only — the conversation continues, just without the voice inflection as input
+- The natural production upgrade is to write audio to object storage and pass a URL through Temporal instead of the bytes
 
 ---
 
@@ -140,7 +163,7 @@ Voice agents are built from layers. Most production systems stitch several of th
 
 ---
 
-## Future Development
+## Future Development Ideas
 
 - **DM voice** — the Dungeon Master currently narrates via text only; the natural next step is routing DM lines through a TTS call (or a native audio model) so the d20 roll outcome is spoken aloud between character turns
 - **Temporal native streaming** — Temporal is building native streaming support that would let the workflow push audio chunks directly to the caller without the current asyncio.Queue workaround; adopting it when available would simplify the architecture and remove the in-process shared state
