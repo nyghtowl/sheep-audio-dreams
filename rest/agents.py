@@ -355,20 +355,26 @@ def _generate_zara_audio(
 
     # Step 1: generate dialogue text — Gemini Flash with Claude fallback
     try:
+        prompt = (
+            f"Prior context:\n{context_text}\n\n"
+            "Continue the dialogue as your character. ONE short sentence only. No stage directions."
+        )
         text_response = _get_gemini().models.generate_content(
             model="gemini-2.5-flash",
-            contents=types.Part.from_text(
-                text=(
-                    f"Prior context:\n{context_text}\n\n"
-                    "Continue the dialogue as your character. ONE short sentence only. No stage directions."
-                )
-            ),
+            contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=config.system_prompt,
-                max_output_tokens=120,
+                max_output_tokens=200,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
-        transcript = text_response.text.strip()
+        # Extract non-thought text parts explicitly (thinking models split response into parts)
+        raw_parts = text_response.candidates[0].content.parts
+        text_parts = [
+            p.text for p in raw_parts
+            if p.text and not getattr(p, "thought", False)
+        ]
+        transcript = " ".join(text_parts).strip() or (text_response.text or "").strip()
     except Exception as e:
         logger.warning("Gemini text generation failed (%s) — falling back to Claude for Zara", e)
         transcript = generate_dialogue(config, history)
