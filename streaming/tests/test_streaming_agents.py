@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from config import AGENTS, AgentConfig, DialogueProvider, LYRA, ZARA
+from config import AGENTS, DialogueProvider, LYRA, ZARA
 from agents import _build_text_context, streaming_turn
 
 
@@ -21,18 +21,22 @@ from agents import _build_text_context, streaming_turn
 # ---------------------------------------------------------------------------
 
 def test_lyra_uses_openai_realtime():
+    """Lyra should be configured to use the OpenAI Realtime provider."""
     assert LYRA.dialogue_provider == DialogueProvider.OPENAI_REALTIME
 
 
 def test_zara_uses_gemini_live():
+    """Zara should be configured to use the Gemini Live provider."""
     assert ZARA.dialogue_provider == DialogueProvider.GEMINI_LIVE
 
 
 def test_two_agents_defined():
+    """There should be exactly two agents defined."""
     assert len(AGENTS) == 2
 
 
 def test_all_agents_have_required_fields():
+    """Every agent must have the minimum required fields populated."""
     for agent in AGENTS:
         assert agent.name
         assert agent.role
@@ -46,11 +50,13 @@ def test_all_agents_have_required_fields():
 # ---------------------------------------------------------------------------
 
 def test_build_text_context_empty_history():
+    """Empty history should produce a non-empty default prompt string."""
     result = _build_text_context([])
     assert result  # should return a non-empty default prompt
 
 
 def test_build_text_context_includes_recent_turns():
+    """Context string should include character names from recent history."""
     history = [
         {"role": "user", "content": "[Lyra]: Watch the door."},
         {"role": "user", "content": "[Zara]: I cast fireball!"},
@@ -61,6 +67,7 @@ def test_build_text_context_includes_recent_turns():
 
 
 def test_build_text_context_caps_at_10_turns():
+    """Context should only include the last 10 turns, not the full history."""
     history = [{"role": "user", "content": f"[Agent]: Turn {i}"} for i in range(20)]
     result = _build_text_context(history)
     # Should only include last 10 turns — first 10 should not appear
@@ -73,6 +80,8 @@ def test_build_text_context_caps_at_10_turns():
 # ---------------------------------------------------------------------------
 
 class MockRealtimeEvent:
+    """Minimal stand-in for an OpenAI Realtime API event object."""
+
     def __init__(self, type_, **kwargs):
         self.type = type_
         for k, v in kwargs.items():
@@ -80,6 +89,8 @@ class MockRealtimeEvent:
 
 
 class MockGeminiResponse:
+    """Minimal stand-in for a Gemini Live response object."""
+
     def __init__(self, data=None, text=None, turn_complete=False):
         self.data = data
         self.text = text
@@ -87,7 +98,7 @@ class MockGeminiResponse:
 
 
 @asynccontextmanager
-async def mock_openai_realtime_connection(*args, **kwargs):
+async def mock_openai_realtime_connection(*_args, **_kwargs):
     """Mock that emits a fixed sequence of Realtime events."""
     conn = AsyncMock()
     conn.session = AsyncMock()
@@ -125,7 +136,8 @@ async def mock_gemini_receive():
 
 
 @asynccontextmanager
-async def mock_gemini_live_connection(*args, **kwargs):
+async def mock_gemini_live_connection(*_args, **_kwargs):
+    """Mock that yields a Gemini Live session emitting fixed audio responses."""
     session = AsyncMock()
     session.send = AsyncMock()
     session.receive = mock_gemini_receive

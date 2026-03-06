@@ -1,0 +1,21 @@
+[FORMAT]
+max-line-length = 120
+
+[MESSAGES CONTROL]
+disable =
+    C0103,  # invalid-name: module-level vars use _lower_case, not UPPER_CASE
+    C0415,  # import-outside-toplevel: lazy/conditional imports are intentional
+    C0413,  # wrong-import-position: some imports follow env/mock setup
+    W0603,  # global-statement: used intentionally for lazy client init
+    R0801,  # duplicate-code: rest/ and streaming/ configs are similar by design
+    R0401,  # cyclic-import: app <-> temporal_workflow is safe at runtime
+    E1101,  # no-member: false positive on wave.open() in write mode
+    R0903,  # too-few-public-methods: dataclasses and small config classes
+    W0718,  # broad-exception-caught: intentional for resilience in activities
+    E0606,  # possibly-used-before-assignment: conditional imports (if MOCK_MODE)
+    E0601,  # used-before-assignment: conditional imports (if MOCK_MODE)
+    E0611,  # no-name-in-module: private functions imported in tests
+    R0912,  # too-many-branches: WebSocket handler complexity is intentional
+    R0915,  # too-many-statements: WebSocket handler complexity is intentional
+    R0914,  # too-many-locals: streaming activity uses many local vars by design
+    W0201,  # attribute-defined-outside-init: pytest setup_method is equivalent to __init__

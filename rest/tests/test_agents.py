@@ -9,8 +9,6 @@ import os
 import wave
 from unittest.mock import patch
 
-import pytest
-
 # Force mock mode before importing agents so no clients are initialised
 os.environ.setdefault("MOCK_MODE", "1")
 
@@ -21,8 +19,6 @@ from agents import (
     _pcm_to_wav,
     _strip_stage_directions,
 )
-from config import AGENTS
-
 
 # ---------------------------------------------------------------------------
 # _strip_stage_directions
@@ -174,6 +170,7 @@ class TestGameSession:
         assert 1 <= roll <= 20
 
     def test_last_audio_bytes_updated(self):
+        """last_audio_bytes should be populated after a turn runs."""
         assert self.session.last_audio_bytes is None
         self.session.next_turn()
         assert self.session.last_audio_bytes is not None

@@ -7,8 +7,6 @@ import os
 import random
 import re
 import wave
-from pathlib import Path
-
 from config import AGENTS, DM_NARRATION, AgentConfig, DialogueProvider, TTSProvider, ZARA_ELEVENLABS_VOICE_ID
 
 logger = logging.getLogger(__name__)
@@ -155,18 +153,17 @@ def generate_dialogue(
             temperature=0.9,
         )
         return (response.content[0].text or "").strip()
-    else:
-        messages = [
-            {"role": "system", "content": config.system_prompt},
-            *history,
-        ]
-        response = _get_openai().chat.completions.create(
-            model="gpt-4o",
-            messages=messages,
-            max_tokens=150,
-            temperature=0.9,
-        )
-        return response.choices[0].message.content.strip()
+    messages = [
+        {"role": "system", "content": config.system_prompt},
+        *history,
+    ]
+    response = _get_openai().chat.completions.create(
+        model="gpt-4o",
+        messages=messages,
+        max_tokens=150,
+        temperature=0.9,
+    )
+    return response.choices[0].message.content.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +229,6 @@ def _synthesize_elevenlabs(text: str, voice_id: str) -> bytes:
 
 def _synthesize_gtts(text: str) -> bytes:
     """Generate speech via Google TTS (free, no API key required)."""
-    import io
     from gtts import gTTS
     fp = io.BytesIO()
     gTTS(text=text, lang="en").write_to_fp(fp)
@@ -413,6 +409,7 @@ def generate_turn_audio(
 # ---------------------------------------------------------------------------
 
 def roll_d20() -> int:
+    """Roll a d20 and return the result (1–20)."""
     return random.randint(1, 20)
 
 
@@ -472,16 +469,15 @@ def generate_dm_reaction(name: str, dialogue: str, roll: int) -> str:
             messages=[{"role": "user", "content": prompt}],
         )
         return (resp.content[0].text or "").strip()
-    else:
-        resp = _get_openai().chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": _DM_SYSTEM},
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=80,
-        )
-        return resp.choices[0].message.content.strip()
+    resp = _get_openai().chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": _DM_SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
+        max_tokens=80,
+    )
+    return resp.choices[0].message.content.strip()
 
 
 # ---------------------------------------------------------------------------

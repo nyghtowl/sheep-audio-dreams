@@ -126,6 +126,7 @@ class StreamingGameWorkflow:
 
     @workflow.run
     async def run(self, agent_configs: list[dict], session_id: str) -> None:
+        """Start the workflow and wait until stopped or MAX_TURNS reached."""
         self._agent_configs = agent_configs
         self._session_id = session_id
         await workflow.wait_condition(

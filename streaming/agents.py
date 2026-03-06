@@ -64,7 +64,7 @@ def _openai_client():
 
 
 def _gemini_client():
-    import google.genai as genai
+    from google import genai
     return genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
 
@@ -178,7 +178,7 @@ async def _zara_streaming_turn(
     Puts None into the queue when the turn is complete.
     Returns the transcript text.
     """
-    import google.genai.types as types
+    from google.genai import types
 
     client = _gemini_client()
     transcript_parts: list[str] = []
@@ -304,7 +304,6 @@ async def streaming_turn(
     """
     if agent.dialogue_provider == DialogueProvider.OPENAI_REALTIME:
         return await _lyra_streaming_turn(agent, history, last_audio, queue, audio_out)
-    elif agent.dialogue_provider == DialogueProvider.GEMINI_LIVE:
+    if agent.dialogue_provider == DialogueProvider.GEMINI_LIVE:
         return await _zara_streaming_turn(agent, history, last_audio, queue, audio_out)
-    else:
-        raise ValueError(f"Unsupported dialogue provider: {agent.dialogue_provider}")
+    raise ValueError(f"Unsupported dialogue provider: {agent.dialogue_provider}")

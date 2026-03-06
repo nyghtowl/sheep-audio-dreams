@@ -5,6 +5,8 @@ from enum import Enum
 
 
 class DialogueProvider(Enum):
+    """Streaming speech providers for each character."""
+
     OPENAI_REALTIME = "openai_realtime"  # gpt-4o-realtime-preview: WebSocket audio in/out
     GEMINI_LIVE     = "gemini_live"      # gemini-2.5-flash-native-audio: WebSocket audio in/out
 

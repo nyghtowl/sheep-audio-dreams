@@ -171,12 +171,14 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
+    """Serve the frontend HTML page."""
     html_path = STATIC_DIR / "index.html"
     return HTMLResponse(content=html_path.read_text())
 
 
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
+    """Handle a browser WebSocket connection for one game session."""
     await websocket.accept()
 
     # Each session gets a fresh audio queue
