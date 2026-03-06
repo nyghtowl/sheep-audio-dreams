@@ -109,6 +109,7 @@ def _temporal_run(coro, timeout: float = 120.0):
 async def _start_workflow(session_id: str) -> str | None:
     if _temporal_client is None:
         return None
+    from temporalio.client import WorkflowIDReusePolicy
     from temporal_workflow import StreamingGameWorkflow
     agent_configs = [{"name": a.name, "provider": a.dialogue_provider.value} for a in AGENTS]
     workflow_id = f"dnd-streaming-{session_id}"
@@ -117,6 +118,7 @@ async def _start_workflow(session_id: str) -> str | None:
         args=[agent_configs, session_id],
         id=workflow_id,
         task_queue=TASK_QUEUE,
+        id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE,
     )
     return workflow_id
 

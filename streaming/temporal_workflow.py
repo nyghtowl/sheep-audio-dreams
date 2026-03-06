@@ -147,7 +147,7 @@ class StreamingGameWorkflow:
             streaming_turn_activity,
             args=[agent_name, self._history, self._session_id],
             start_to_close_timeout=timedelta(seconds=120),
-            heartbeat_timeout=timedelta(seconds=10),
+            heartbeat_timeout=timedelta(seconds=30),
             retry_policy=RETRY_POLICY,
         )
 

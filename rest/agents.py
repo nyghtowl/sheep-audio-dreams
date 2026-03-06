@@ -364,17 +364,22 @@ def _generate_zara_audio(
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=config.system_prompt,
-                max_output_tokens=200,
+                max_output_tokens=1024,
                 thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
         # Extract non-thought text parts explicitly (thinking models split response into parts)
         raw_parts = text_response.candidates[0].content.parts
+        logger.info(
+            "Zara raw parts: %s",
+            [(getattr(p, "thought", False), repr(p.text)[:120] if p.text else None) for p in raw_parts],
+        )
         text_parts = [
             p.text for p in raw_parts
             if p.text and not getattr(p, "thought", False)
         ]
         transcript = " ".join(text_parts).strip() or (text_response.text or "").strip()
+        logger.info("Zara transcript: %r", transcript)
     except Exception as e:
         logger.warning("Gemini text generation failed (%s) — falling back to Claude for Zara", e)
         transcript = generate_dialogue(config, history)
