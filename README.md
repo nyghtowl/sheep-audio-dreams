@@ -109,6 +109,12 @@ In the **REST demo**, each Next Turn click executes a Temporal Update. You'll se
 
 In the **streaming demo**, the same Update pattern applies but the activity runs longer — it holds an open WebSocket connection and heartbeats Temporal on every audio chunk. The UI shows `streaming_turn_activity` nodes with timing that reflects the actual stream duration. Audio delivery is out-of-band (asyncio.Queue → browser), so Temporal tracks state and durability without serialising megabytes of audio.
 
+**Streaming latency and the connection-per-turn tradeoff** — Lyra's turns start within ~1s. Zara's turns take 7–10s before the first audio arrives. The gap comes from a fundamental tension between Temporal's activity model and persistent WebSocket connections.
+
+Temporal activities are designed to be stateless and retryable: if one fails mid-turn, Temporal spins up a fresh execution. A live WebSocket connection can't be serialized into Temporal's state, so the cleanest mapping is to open a fresh connection at the start of each activity and close it when the turn completes. That means every Zara turn pays the full cost of TLS handshake + session negotiation with Gemini Live (~2–4s), plus the model's own time-to-first-audio (~3–5s for the current preview model).
+
+Persisting the connection across turns would hide that setup cost but requires storing the session object outside Temporal (in process memory, keyed by `session_id`) and then re-implementing the retry semantics that Temporal otherwise provides for free: health checks, reconnect on idle timeout, and ensuring retried activities get a fresh connection rather than a half-written stale one. In this demo the tradeoff favors simplicity — the activity boundary stays clean, retries work automatically, and the latency difference is a useful illustration of the cost. The natural optimization for production is to pre-warm Zara's connection during Lyra's turn so the handshake is already complete when Zara's activity starts.
+
 **Keeping Temporal state lean** — Temporal's event log is built for small, serializable data: text transcripts, turn index, session lifecycle. Audio bytes don't belong there — they'd bloat the history and slow replay. Both demos store the previous character's raw audio in an in-process dict (`_last_audio[session_id]`) inside the app. Activities read from it and write back to it without Temporal ever seeing the bytes; the workflow only tracks text. The tradeoff: audio context doesn't survive a server crash (the next turn falls back to text-only context). The natural upgrade for production is to write audio to object storage and pass a URL through Temporal instead of the bytes.
 
 ---
@@ -131,6 +137,17 @@ Voice agents are built from layers. Most production systems stitch several of th
 **Where this demo fits:** Lyra uses Native Conversational AI (OpenAI `gpt-4o-audio-preview` / `gpt-4o-realtime-preview`). Zara uses Expressive TTS (ElevenLabs/OpenAI `tts-1`) in the REST demo and Native Conversational AI (Gemini Live) in the streaming demo. Neither demo uses STT — the characters communicate directly through audio and text context.
 
 ![Campaign end](assets/sheep-dnd-end.png)
+
+---
+
+## Future Development
+
+- **DM voice** — the Dungeon Master currently narrates via text only; the natural next step is routing DM lines through a TTS call (or a native audio model) so the d20 roll outcome is spoken aloud between character turns
+- **Temporal native streaming** — Temporal is building native streaming support that would let the workflow push audio chunks directly to the caller without the current asyncio.Queue workaround; adopting it when available would simplify the architecture and remove the in-process shared state
+- **Interruption handling** — production voice agents let one speaker cut the other off mid-sentence; both OpenAI Realtime and Gemini Live support this via VAD events, and the same Temporal activity structure can accommodate it by treating interruptions as early turn completions
+- **Human-in-the-loop** — expose a text or voice input box so a player can speak as a third character; the workflow would route their input alongside Lyra and Zara's turns
+- **Pre-warm Zara's connection** — open the Gemini Live WebSocket during Lyra's turn so the handshake cost is hidden; cuts Zara's time-to-first-audio from 7–10s to closer to Lyra's ~1s without changing the activity boundary model
+- **Persistent memory** — store conversation history in an external store (e.g. a vector DB) so the characters remember events across sessions, not just within a single workflow run
 
 ---
 
