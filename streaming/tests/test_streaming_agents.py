@@ -89,12 +89,28 @@ class MockRealtimeEvent:
 
 
 class MockGeminiResponse:
-    """Minimal stand-in for a Gemini Live response object."""
+    """Minimal stand-in for a Gemini Live response object.
+
+    Mirrors the real Gemini response structure: transcripts live at
+    server_content.output_transcription.text, not at a top-level .text attribute.
+    """
 
     def __init__(self, data=None, text=None, turn_complete=False):
         self.data = data
-        self.text = text
-        self.server_content = MagicMock(turn_complete=turn_complete) if turn_complete else None
+        if text:
+            transcription = MagicMock()
+            transcription.text = text
+            server = MagicMock()
+            server.turn_complete = False
+            server.output_transcription = transcription
+            self.server_content = server
+        elif turn_complete:
+            server = MagicMock()
+            server.turn_complete = True
+            server.output_transcription = None
+            self.server_content = server
+        else:
+            self.server_content = None
 
 
 @asynccontextmanager

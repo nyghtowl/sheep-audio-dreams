@@ -5,12 +5,16 @@ from enum import Enum
 
 
 class TTSProvider(Enum):
+    """Text-to-speech backend for voice synthesis fallback."""
+
     ELEVENLABS = "elevenlabs"
     OPENAI = "openai"
     GTTS = "gtts"
 
 
 class DialogueProvider(Enum):
+    """Dialogue generation backend for each character."""
+
     OPENAI_AUDIO = "openai_audio"   # gpt-4o-audio-preview: audio in → audio out
     GEMINI_AUDIO = "gemini_audio"   # gemini-2.0-flash-exp: audio in → audio out
     CLAUDE_TEXT  = "claude_text"    # Claude text-only (existing path)

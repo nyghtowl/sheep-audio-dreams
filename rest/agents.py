@@ -7,7 +7,10 @@ import os
 import random
 import re
 import wave
-from config import AGENTS, DM_NARRATION, AgentConfig, DialogueProvider, TTSProvider, ZARA_ELEVENLABS_VOICE_ID
+from config import (
+    AGENTS, AgentConfig, DialogueProvider, DM_NARRATION, TTSProvider,
+    ZARA_ELEVENLABS_VOICE_ID,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,9 +68,11 @@ _MOCK_LINES = {
     "Zara": [
         "A TALKING SHEEP?! This is the best day of my life! Ember, are you seeing this?!",
         "I cast Detect Magic — oh WOW the arcane threads on this sheep are incredible! Wild Magic surge? Yes please!",
-        "Stand back everyone! I'm channeling a bolt of chromatic energy at the door! ...it's pink. I meant for it to be pink.",
+        "Stand back everyone! I'm channeling a bolt of chromatic energy at the door! "
+        "...it's pink. I meant for it to be pink.",
         "Ember, fireball formation! Just kidding — we're indoors. Firebolt it is. FWOOSH!",
-        "I'll roll an Arcana check to analyze the polymorph... 19! I can see the weave, I just need time to unravel it!",
+        "I'll roll an Arcana check to analyze the polymorph... 19! "
+        "I can see the weave, I just need time to unravel it!",
         "Noke, you absolute FOOL! You messed with a sheep AND a wild magic sorceress?! CHAOS BOLT!",
         "The surge of magic is beautiful! Slightly on fire, but beautiful! Someone pat out my cloak, please.",
         "I'm weaving the counter-spell now. Hold them off, Lyra! This sheep is about to be a wizard again!",
@@ -143,7 +148,10 @@ def generate_dialogue(
     if _use_claude_for_dialogue():
         # Claude requires at least one message; first turn has empty history.
         messages = history if history else [
-            {"role": "user", "content": "The scene is set. You are first to speak. Deliver your opening line in character."},
+            {
+                "role": "user",
+                "content": "The scene is set. You are first to speak. Deliver your opening line in character.",
+            },
         ]
         response = _get_anthropic().messages.create(
             model="claude-sonnet-4-6",
@@ -335,7 +343,7 @@ def _generate_lyra_audio(
 def _generate_zara_audio(
     config: AgentConfig,
     history: list[dict],
-    last_audio: bytes | None,
+    _last_audio: bytes | None,
 ) -> tuple[str, bytes]:
     """Gemini two-step: gemini-2.5-flash for dialogue text, gemini-2.5-flash-preview-tts for voice.
 

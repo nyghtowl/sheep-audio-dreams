@@ -116,6 +116,7 @@ class InteractiveGameWorkflow:
 
     @workflow.run
     async def run(self, agent_configs: list[dict]) -> None:
+        """Start the workflow, store agent configs, and wait for end_game signal."""
         self._agent_configs = agent_configs
         # Use the workflow ID as the session key for in-memory audio lookup
         self._session_id = workflow.info().workflow_id
@@ -133,7 +134,6 @@ class InteractiveGameWorkflow:
         """
         cfg = self._agent_configs[self._turn_index % len(self._agent_configs)]
         agent_name = cfg["name"]
-        provider = cfg["provider"]
 
         roll = workflow.random().randint(1, 20)
 

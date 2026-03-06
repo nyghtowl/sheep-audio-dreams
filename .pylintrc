@@ -19,3 +19,4 @@ disable =
     R0915,  # too-many-statements: WebSocket handler complexity is intentional
     R0914,  # too-many-locals: streaming activity uses many local vars by design
     W0201,  # attribute-defined-outside-init: pytest setup_method is equivalent to __init__
+    R0902,  # too-many-instance-attributes: AgentConfig needs all its fields by design

@@ -27,7 +27,7 @@ load_dotenv()  # Must load env vars BEFORE importing agents (which checks for AP
 import gradio as gr
 
 from agents import GameSession
-from config import AGENTS, DM_NARRATION, DialogueProvider
+from config import AGENTS, DialogueProvider
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -39,8 +39,12 @@ TASK_QUEUE = "dnd-turns"
 # Custom CSS — dark fantasy / parchment theme
 # ---------------------------------------------------------------------------
 
-CUSTOM_CSS = """
-@import url('https://fonts.googleapis.com/css2?family=MedievalSharp&family=Crimson+Text:ital,wght@0,400;0,600;1,400&display=swap');
+_FONT_IMPORT = (
+    "@import url('https://fonts.googleapis.com/css2?family=MedievalSharp"
+    "&family=Crimson+Text:ital,wght@0,400;0,600;1,400&display=swap');"
+)
+
+CUSTOM_CSS = _FONT_IMPORT + """
 
 :root {
     --parchment: #1a1a2e;
@@ -186,6 +190,7 @@ async def _start_embedded_worker() -> None:
 
 
 def _run_temporal_loop() -> None:
+    """Run the Temporal event loop forever in a background thread."""
     asyncio.set_event_loop(_temporal_loop)
     _temporal_loop.run_until_complete(_start_embedded_worker())
     _temporal_loop.run_forever()
@@ -229,7 +234,6 @@ def audio_bytes_to_path(audio_bytes: bytes) -> str:
 
     Detects WAV vs MP3 by header and reuses a separate temp file for each format.
     """
-    global _LATEST_AUDIO_PATHS
     suffix = ".wav" if audio_bytes[:4] == b"RIFF" else ".mp3"
     key = suffix.lstrip(".")
     if _LATEST_AUDIO_PATHS[key] is None:
@@ -246,10 +250,14 @@ def audio_bytes_to_path(audio_bytes: bytes) -> str:
 
 
 def make_char_card(agent) -> str:
+    """Build the HTML snippet for a character portrait card."""
     portrait = ASSETS / f"{agent.name.lower()}.png"
     img_html = ""
     if portrait.exists():
-        img_html = f'<img src="/file={portrait}" style="width:100px;height:100px;border-radius:50%;border:2px solid {agent.color};margin-bottom:8px;" /><br/>'
+        img_html = (
+            f'<img src="/file={portrait}" style="width:100px;height:100px;'
+            f'border-radius:50%;border:2px solid {agent.color};margin-bottom:8px;" /><br/>'
+        )
 
     if agent.dialogue_provider == DialogueProvider.OPENAI_AUDIO:
         tts_class = "tts-openai"
@@ -365,10 +373,16 @@ def next_turn(session: GameSession, chat_history: list, workflow_id: str | None,
                 "**OpenAI quota exceeded.** Add payment method or check usage at "
                 "[platform.openai.com/account/billing](https://platform.openai.com/account/billing)."
             )
-        elif "401" in err_str and ("unusual_activity" in err_str.lower() or "free tier" in err_str.lower() or "paid plan" in err_str.lower()):
+        elif "401" in err_str and (
+            "unusual_activity" in err_str.lower()
+            or "free tier" in err_str.lower()
+            or "paid plan" in err_str.lower()
+        ):
             hint = (
-                "**ElevenLabs** has restricted your account (e.g. Free Tier disabled, or VPN/proxy detected). "
-                "Try from a normal connection, or add a [paid subscription](https://elevenlabs.io/subscription) at elevenlabs.io."
+                "**ElevenLabs** has restricted your account "
+                "(e.g. Free Tier disabled, or VPN/proxy detected). "
+                "Try from a normal connection, or add a "
+                "[paid subscription](https://elevenlabs.io/subscription) at elevenlabs.io."
             )
         elif "401" in err_str or "invalid" in err_str.lower() or "authentication" in err_str.lower():
             hint = "Check your `.env`: `OPENAI_API_KEY` and `ELEVENLABS_API_KEY` must be set and valid."
@@ -376,7 +390,10 @@ def next_turn(session: GameSession, chat_history: list, workflow_id: str | None,
             hint = "Check your `.env` and API keys, or try again in a moment."
         chat_history.append({
             "role": "assistant",
-            "content": f"⚠️ *The magical weave flickers... (API error)*\n\n{hint}\n\n<details><summary>Details</summary>\n`{err_str}`\n</details>",
+            "content": (
+                f"⚠️ *The magical weave flickers... (API error)*\n\n{hint}\n\n"
+                f"<details><summary>Details</summary>\n`{err_str}`\n</details>"
+            ),
         })
         return session, chat_history, None, None
 
@@ -472,7 +489,8 @@ def reset_game(workflow_id: str | None):
 
 
 def build_app() -> gr.Blocks:
-    with gr.Blocks(title="⚔️ The Wild Sheep Chase") as app:
+    """Assemble and return the Gradio Blocks app."""
+    with gr.Blocks(title="⚔️ The Wild Sheep Chase") as blocks:
         session_state = gr.State(GameSession())
         workflow_id_state = gr.State(None)
         pending_dm_state = gr.State(None)
@@ -564,7 +582,7 @@ def build_app() -> gr.Blocks:
             cancels=[auto_event],
         )
 
-    return app
+    return blocks
 
 
 # ---------------------------------------------------------------------------
@@ -572,5 +590,5 @@ def build_app() -> gr.Blocks:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    app = build_app()
-    app.launch(server_name="0.0.0.0", server_port=7860, css=CUSTOM_CSS)
+    demo = build_app()
+    demo.launch(server_name="0.0.0.0", server_port=7860, css=CUSTOM_CSS)
