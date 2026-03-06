@@ -2,7 +2,7 @@
 
 Turn-by-turn REST approach: click **Next Turn**, wait for a full turn to complete, hear the audio. Each turn is a complete HTTP request/response cycle. This is the right starting point for understanding how voice agent pieces fit together before adding streaming complexity.
 
-> **She Ships! — February 25, 2026** — This REST demo was the basis for the live demo at that talk ([slide deck PDF](../assets/SheShips_When_Voice_Agents_Roll_Initiative.pdf)). The repo has evolved since then:
+> **She Ships! — February 25, 2026** — This REST demo was the basis for the [live demo](https://youtu.be/-mp9beFRJ1Y) at that talk ([slide deck PDF](../assets/SheShips_When_Voice_Agents_Roll_Initiative.pdf)). The repo has evolved since then:
 > - The decorative dice animation became a real d20 mechanic — `workflow.random().randint(1, 20)` inside the Temporal workflow handler keeps rolls deterministic and replay-safe
 > - A DM narration activity (`claude-haiku-4-5` or `gpt-4o-mini`) generates one sentence describing the roll outcome, displayed at the top of the *next* turn so it lands as a beat between characters after the audio has played
 
