@@ -20,8 +20,6 @@ from agents import (
     _generate_silent_mp3,
     _pcm_to_wav,
     _strip_stage_directions,
-    format_roll,
-    roll_d20,
 )
 from config import AGENTS
 
@@ -115,40 +113,6 @@ class TestGenerateSilentMp3:
 
 
 # ---------------------------------------------------------------------------
-# format_roll
-# ---------------------------------------------------------------------------
-
-class TestFormatRoll:
-    def test_nat_20(self):
-        result = format_roll(20)
-        assert "20" in result
-        assert "NAT" in result.upper() or "nat" in result.lower()
-
-    def test_critical_fail(self):
-        result = format_roll(1)
-        assert "1" in result
-        assert "fail" in result.lower() or "critical" in result.lower()
-
-    def test_normal_roll(self):
-        result = format_roll(10)
-        assert "10" in result
-
-
-# ---------------------------------------------------------------------------
-# roll_d20
-# ---------------------------------------------------------------------------
-
-class TestRollD20:
-    def test_result_in_valid_range(self):
-        for _ in range(50):
-            result = roll_d20()
-            assert 1 <= result <= 20
-
-    def test_returns_int(self):
-        assert isinstance(roll_d20(), int)
-
-
-# ---------------------------------------------------------------------------
 # GameSession (mock mode)
 # ---------------------------------------------------------------------------
 
@@ -189,19 +153,25 @@ class TestGameSession:
         assert entry["role"] == "user"
 
     def test_history_content_includes_agent_name(self):
-        name, dialogue, _, _ = self.session.next_turn()
+        name, dialogue, *_ = self.session.next_turn()
         content = self.session.history[-1]["content"]
         assert name in content
 
     def test_alternating_agents(self):
-        name1, _, _, _ = self.session.next_turn()
-        name2, _, _, _ = self.session.next_turn()
+        name1, *_ = self.session.next_turn()
+        name2, *_ = self.session.next_turn()
         assert name1 != name2
 
     def test_next_turn_returns_audio_bytes(self):
-        _, _, audio, _ = self.session.next_turn()
+        _, _, audio, *_ = self.session.next_turn()
         assert isinstance(audio, bytes)
         assert len(audio) > 0
+
+    def test_next_turn_returns_dm_text_and_roll(self):
+        _, _, _, dm_text, roll = self.session.next_turn()
+        assert isinstance(dm_text, str)
+        assert len(dm_text) > 0
+        assert 1 <= roll <= 20
 
     def test_last_audio_bytes_updated(self):
         assert self.session.last_audio_bytes is None

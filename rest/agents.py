@@ -409,22 +409,79 @@ def generate_turn_audio(
 
 
 # ---------------------------------------------------------------------------
-# Dice rolling
+# Dice rolling & DM narration
 # ---------------------------------------------------------------------------
 
-
 def roll_d20() -> int:
-    """Roll a d20 and return the result."""
     return random.randint(1, 20)
 
 
-def format_roll(result: int) -> str:
-    """Format a dice roll for display (HTML)."""
-    if result == 20:
-        return "🎲 <b>NAT 20!</b> 🎉"
-    if result == 1:
-        return "🎲 <b>Critical fail...</b> (1)"
-    return f"🎲 Rolled a <b>{result}</b>"
+_DM_SYSTEM = (
+    "You are a terse Dungeon Master narrating outcomes in a D&D adventure. "
+    "A character just acted and rolled a d20. Write exactly one punchy sentence "
+    "describing what happens next. "
+    "Roll 15-20: dramatic success or unexpected boon. "
+    "Roll 6-14: partial success or mixed outcome. "
+    "Roll 1-5: complication, mishap, or failure with a twist. "
+    "No quotation marks. No stage directions. Present tense."
+)
+
+_MOCK_DM_REACTIONS: dict[str, list[str]] = {
+    "high": [
+        "The arrow flies true and the thug crumples before he can shout a warning.",
+        "The spell detonates perfectly — the door splinters into embers and awe.",
+        "Every guard in the tavern freezes, weapons raised but hands trembling.",
+        "Fate smiles: the lock clicks open and the way forward is clear.",
+    ],
+    "mid": [
+        "The blow lands, but your opponent staggers back rather than falling.",
+        "The magic works, though a nearby torch sputters an ominous warning.",
+        "You advance, but the floorboard groans loud enough to be heard upstairs.",
+        "The plan holds — for now — though something feels off about the shadows.",
+    ],
+    "low": [
+        "The shot clips a beam overhead; splinters rain down and alert the guards.",
+        "A wild surge of magic bounces off the ceiling and singes your own cape.",
+        "Your footing slips on a damp stone — the enemy lunges while you recover.",
+        "The door opens, but straight into a second, very unhappy patrol.",
+    ],
+}
+
+_mock_dm_counters: dict[str, int] = {"high": 0, "mid": 0, "low": 0}
+
+
+def _mock_dm_reaction(roll: int) -> str:
+    tier = "high" if roll >= 15 else ("low" if roll <= 5 else "mid")
+    lines = _MOCK_DM_REACTIONS[tier]
+    idx = _mock_dm_counters[tier]
+    _mock_dm_counters[tier] = idx + 1
+    return lines[idx % len(lines)]
+
+
+def generate_dm_reaction(name: str, dialogue: str, roll: int) -> str:
+    """Ask the DM model to narrate the outcome of this turn's d20 roll."""
+    if MOCK_MODE:
+        return _mock_dm_reaction(roll)
+
+    prompt = f'Character: {name}. They just said: "{dialogue}". d20 roll: {roll}.'
+    if _use_claude_for_dialogue():
+        resp = _get_anthropic().messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=80,
+            system=_DM_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return (resp.content[0].text or "").strip()
+    else:
+        resp = _get_openai().chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": _DM_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=80,
+        )
+        return resp.choices[0].message.content.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +497,6 @@ class GameSession:
         self.turn_index: int = 0
         self.agents = AGENTS
         self.started: bool = False
-        self.last_roll: str = ""
         self.last_audio_bytes: bytes | None = None  # previous turn's audio (for native speech models)
 
     def get_opening(self) -> str:
@@ -448,30 +504,22 @@ class GameSession:
         self.started = True
         return DM_NARRATION
 
-    def next_turn(self) -> tuple[str, str, bytes, str]:
+    def next_turn(self) -> tuple[str, str, bytes, str, int]:
         """Execute the next character's turn.
 
         Returns:
-            (character_name, dialogue_text, audio_bytes, dice_display)
+            (character_name, dialogue_text, audio_bytes, dm_narration, roll)
         """
         agent = self.agents[self.turn_index % len(self.agents)]
         logger.info("Generating turn for %s", agent.name)
 
+        roll = roll_d20()
+
         # Generate dialogue + audio (native speech or legacy text+TTS path)
         dialogue, audio_bytes = generate_turn_audio(agent, self.history, self.last_audio_bytes)
 
-        # Check for dice roll triggers — append result to text
-        dice_display = ""
-        roll_keywords = ["roll", "saving throw", "nat 20", "nat 1", "critical", "d20", "initiative", "perception", "arcana"]
-        if any(kw in dialogue.lower() for kw in roll_keywords) or random.random() < 0.35:
-            result = roll_d20()
-            dice_display = format_roll(result)
-            if result == 20:
-                dialogue += " That's a nat 20!"
-            elif result == 1:
-                dialogue += " ...a one. Critical fail."
-            else:
-                dialogue += f" That's a {result}."
+        # DM narrates the outcome of the roll
+        dm_text = generate_dm_reaction(agent.name, dialogue, roll)
 
         # Store audio so the next character can "hear" it
         self.last_audio_bytes = audio_bytes
@@ -483,6 +531,4 @@ class GameSession:
         })
 
         self.turn_index += 1
-        self.last_roll = dice_display
-
-        return agent.name, dialogue, audio_bytes, dice_display
+        return agent.name, dialogue, audio_bytes, dm_text, roll

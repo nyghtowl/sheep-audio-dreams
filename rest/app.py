@@ -9,12 +9,10 @@ agents directly — the UI still works, just without Temporal.
 """
 
 import asyncio
-import base64
 import concurrent.futures
 import io
 import logging
 import os
-import random
 import tempfile
 import threading
 import time
@@ -28,7 +26,7 @@ load_dotenv()  # Must load env vars BEFORE importing agents (which checks for AP
 
 import gradio as gr
 
-from agents import GameSession, format_roll, roll_d20
+from agents import GameSession
 from config import AGENTS, DM_NARRATION, DialogueProvider
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s: %(message)s")
@@ -105,18 +103,6 @@ CUSTOM_CSS = """
     font-size: 1.05em !important;
 }
 
-.dice-display {
-    text-align: center;
-    font-family: 'MedievalSharp', cursive !important;
-    font-size: 1.6em;
-    color: var(--gold) !important;
-    text-shadow: 0 0 8px rgba(226,180,77,0.8), 1px 1px 3px rgba(0,0,0,0.9);
-    background: rgba(226,180,77,0.08);
-    border: 1px solid rgba(226,180,77,0.25);
-    border-radius: 8px;
-    min-height: 48px;
-    padding: 10px 16px;
-}
 
 .control-btn {
     font-family: 'MedievalSharp', cursive !important;
@@ -149,18 +135,6 @@ CUSTOM_CSS = """
 .tts-elevenlabs { background: rgba(74,158,109,0.3); color: #4a9e6d; }
 .tts-openai { background: rgba(155,89,182,0.3); color: #9b59b6; }
 
-@keyframes dice-roll {
-    0%   { transform: scale(1)   rotate(0deg); }
-    20%  { transform: scale(1.5) rotate(-20deg); }
-    45%  { transform: scale(1.8) rotate(18deg); }
-    65%  { transform: scale(1.5) rotate(-10deg); }
-    82%  { transform: scale(1.2) rotate(6deg); }
-    100% { transform: scale(1)   rotate(0deg); }
-}
-.dice-anim {
-    display: inline-block;
-    animation: dice-roll 0.65s cubic-bezier(0.36, 0.07, 0.19, 0.97);
-}
 
 .reset-btn {
     background: linear-gradient(135deg, #c0392b, #922b21) !important;
@@ -180,6 +154,7 @@ from temporalio.worker import Worker
 from temporal_workflow import (
     InteractiveGameWorkflow,
     generate_dialogue_activity,
+    generate_dm_reaction_activity,
     generate_turn_audio_activity,
     synthesize_voice_activity,
 )
@@ -201,6 +176,7 @@ async def _start_embedded_worker() -> None:
                 generate_turn_audio_activity,
                 generate_dialogue_activity,
                 synthesize_voice_activity,
+                generate_dm_reaction_activity,
             ],
         )
         asyncio.create_task(worker.run())
@@ -227,11 +203,10 @@ def _temporal_run(coro, timeout: float = 90.0):
 # Helper to save audio bytes to a temp file for Gradio
 # ---------------------------------------------------------------------------
 
-# Previous turn's raw audio bytes — read by each activity as audio input for the
-# next character, written after each turn completes. Lives only in this process;
-# never serialized through Temporal. On crash+restart the next turn starts with
-# text-only context, which is fine.
-_last_audio: dict[str, bytes | None] = {}
+# Previous turn's raw audio bytes — shared with Temporal activities via
+# _shared_state so both sides reference the same dict object. Lives only in
+# this process; never serialized through Temporal.
+from _shared_state import _last_audio
 
 _LATEST_AUDIO_PATHS: dict[str, str | None] = {"wav": None, "mp3": None}
 
@@ -300,34 +275,6 @@ def make_char_card(agent) -> str:
 # Helpers
 # ---------------------------------------------------------------------------
 
-_DICE_IDLE = "<div class='dice-display'>🎲 Awaiting the first roll...</div>"
-_DICE_KEYWORDS = [
-    "roll", "saving throw", "nat 20", "nat 1", "critical",
-    "d20", "initiative", "perception", "arcana",
-]
-
-
-def _dice_html(dice: str) -> str:
-    """Wrap a dice result string in the animated display div."""
-    if dice:
-        return f"<div class='dice-display'><span class='dice-anim'>{dice}</span></div>"
-    return _DICE_IDLE
-
-
-def _apply_dice(dialogue: str) -> tuple[str, str]:
-    """Optionally append a dice roll to dialogue.
-
-    Returns (modified_dialogue, dice_html). Used for the Temporal path where
-    dice are applied client-side after receiving the workflow result.
-    """
-    if any(kw in dialogue.lower() for kw in _DICE_KEYWORDS) or random.random() < 0.35:
-        result = roll_d20()
-        suffix = {20: " That's a nat 20!", 1: " ...a one. Critical fail."}.get(
-            result, f" That's a {result}."
-        )
-        return dialogue + suffix, _dice_html(format_roll(result))
-    return dialogue, _DICE_IDLE
-
 
 # ---------------------------------------------------------------------------
 # Event handlers
@@ -338,7 +285,7 @@ def start_adventure(session: GameSession, chat_history: list, workflow_id: str |
     """Handle the Start Adventure button: show opening narration and start the workflow."""
     if session.started:
         return (
-            session, chat_history, None, _DICE_IDLE,
+            session, chat_history, None,
             gr.update(interactive=False), gr.update(interactive=True),
             gr.update(interactive=True), workflow_id,
         )
@@ -369,36 +316,47 @@ def start_adventure(session: GameSession, chat_history: list, workflow_id: str |
             new_workflow_id = None
 
     return (
-        session, chat_history, None, _DICE_IDLE,
+        session, chat_history, None,
         gr.update(interactive=False), gr.update(interactive=True),
         gr.update(interactive=True), new_workflow_id,
     )
 
 
-def _get_turn(session: GameSession, workflow_id: str | None) -> tuple[str, str, bytes, str]:
+def _get_turn(session: GameSession, workflow_id: str | None) -> tuple[str, str, bytes, str, int]:
     """Execute one turn via Temporal if available, otherwise call agents directly.
 
-    Returns (agent_name, dialogue, audio_bytes, dice_html).
+    Returns (agent_name, dialogue, audio_bytes, dm_text, roll).
     """
     if workflow_id and _temporal_client is not None:
         handle = _temporal_client.get_workflow_handle(workflow_id)
         result = _temporal_run(handle.execute_update(InteractiveGameWorkflow.execute_turn))
-        dialogue, dice = _apply_dice(result["dialogue"])
-        audio_bytes = base64.b64decode(result["audio_b64"])
-        return result["agent"], dialogue, audio_bytes, dice
+        # Audio lives in _last_audio (written by the activity), never in Temporal payloads
+        audio_bytes = _last_audio.get(workflow_id) or b""
+        return result["agent"], result["dialogue"], audio_bytes, result["dm_text"], result["roll"]
 
     # Fallback: call agents directly (Temporal not available)
-    name, dialogue, audio_bytes, dice_raw = session.next_turn()
-    return name, dialogue, audio_bytes, _dice_html(dice_raw)
+    return session.next_turn()
 
 
-def next_turn(session: GameSession, chat_history: list, workflow_id: str | None):
-    """Handle the Next Turn button click."""
+def next_turn(session: GameSession, chat_history: list, workflow_id: str | None, pending_dm: dict | None):
+    """Handle the Next Turn button click.
+
+    Shows the previous turn's DM reaction first (pending_dm), then runs the
+    current character's turn. DM text is stored in state and shown at the top
+    of the *next* click so it appears after the audio has played.
+    """
     if not session.started:
-        return session, chat_history, None, _DICE_IDLE
+        return session, chat_history, None, None
+
+    # Show the previous turn's DM reaction before running this turn
+    if pending_dm:
+        chat_history.append({
+            "role": "assistant",
+            "content": f"🎲 *{pending_dm['roll']} — {pending_dm['dm_text']}*",
+        })
 
     try:
-        name, dialogue, audio_bytes, dice = _get_turn(session, workflow_id)
+        name, dialogue, audio_bytes, dm_text, roll = _get_turn(session, workflow_id)
     except Exception as e:
         logger.exception("Error during turn generation")
         err_str = str(e).strip() or type(e).__name__
@@ -420,21 +378,23 @@ def next_turn(session: GameSession, chat_history: list, workflow_id: str | None)
             "role": "assistant",
             "content": f"⚠️ *The magical weave flickers... (API error)*\n\n{hint}\n\n<details><summary>Details</summary>\n`{err_str}`\n</details>",
         })
-        return session, chat_history, None, _DICE_IDLE
+        return session, chat_history, None, None
 
     agent = next((a for a in AGENTS if a.name == name), AGENTS[0])
-    msg = f"**<span style='color:{agent.color}'>{name}</span>** ({agent.role})\n\n{dialogue}"
+    msg = (
+        f"**<span style='color:{agent.color}'>{name}</span>** ({agent.role})\n\n"
+        f"{dialogue}"
+    )
     chat_history.append({"role": "assistant", "content": msg})
     audio_path = audio_bytes_to_path(audio_bytes)
-
-    return session, chat_history, audio_path, dice
+    return session, chat_history, audio_path, {"dm_text": dm_text, "roll": roll}
 
 
 AUTO_TURNS = 12
 AUTO_BUFFER = 1.5  # seconds of silence to add after audio finishes before next turn
 
 
-def auto_run(session: GameSession, chat_history: list, workflow_id: str | None):
+def auto_run(session: GameSession, chat_history: list, workflow_id: str | None, pending_dm: dict | None):
     """Generator: prefetch next turn in background while current audio plays."""
     if not session.started:
         return
@@ -444,14 +404,14 @@ def auto_run(session: GameSession, chat_history: list, workflow_id: str | None):
 
     for i in range(AUTO_TURNS):
         try:
-            name, dialogue, audio_bytes, dice = future.result()
+            name, dialogue, audio_bytes, dm_text, roll = future.result()
         except Exception as e:
             logger.exception("Auto-run error")
             chat_history.append({
                 "role": "assistant",
                 "content": f"⚠️ *Auto-run stopped due to an error.*\n\n`{e}`",
             })
-            yield session, chat_history, None, _DICE_IDLE
+            yield session, chat_history, None, None
             executor.shutdown(wait=False)
             return
 
@@ -459,12 +419,23 @@ def auto_run(session: GameSession, chat_history: list, workflow_id: str | None):
         if i < AUTO_TURNS - 1:
             future = executor.submit(_get_turn, session, workflow_id)
 
+        # Show previous turn's DM reaction before this character speaks
+        if pending_dm:
+            chat_history.append({
+                "role": "assistant",
+                "content": f"🎲 *{pending_dm['roll']} — {pending_dm['dm_text']}*",
+            })
+
         agent = next((a for a in AGENTS if a.name == name), AGENTS[0])
-        msg = f"**<span style='color:{agent.color}'>{name}</span>** ({agent.role})\n\n{dialogue}"
+        msg = (
+            f"**<span style='color:{agent.color}'>{name}</span>** ({agent.role})\n\n"
+            f"{dialogue}"
+        )
         chat_history.append({"role": "assistant", "content": msg})
         audio_path = audio_bytes_to_path(audio_bytes)
         duration = _audio_duration_seconds(audio_bytes)
-        yield session, chat_history, audio_path, dice
+        pending_dm = {"dm_text": dm_text, "roll": roll}
+        yield session, chat_history, audio_path, pending_dm
         time.sleep(duration + AUTO_BUFFER)
 
     executor.shutdown(wait=False)
@@ -487,11 +458,11 @@ def reset_game(workflow_id: str | None):
         GameSession(),
         [],
         None,
-        _DICE_IDLE,
         gr.update(interactive=True),
         gr.update(interactive=False),
         gr.update(interactive=False),
         None,  # clear workflow_id
+        None,  # clear pending_dm
     )
 
 
@@ -504,6 +475,7 @@ def build_app() -> gr.Blocks:
     with gr.Blocks(title="⚔️ The Wild Sheep Chase") as app:
         session_state = gr.State(GameSession())
         workflow_id_state = gr.State(None)
+        pending_dm_state = gr.State(None)
 
         # -- Header --
         gr.HTML("<h1 class='title-text'>⚔️ The Wild Sheep Chase ⚔️</h1>")
@@ -526,9 +498,6 @@ def build_app() -> gr.Blocks:
             elem_classes=["adventure-log"],
             avatar_images=None,
         )
-
-        # -- Dice display --
-        dice_display = gr.HTML("<div class='dice-display'>🎲 Awaiting the first roll...</div>")
 
         # -- Audio player --
         audio_player = gr.Audio(
@@ -568,29 +537,29 @@ def build_app() -> gr.Blocks:
             fn=start_adventure,
             inputs=[session_state, chatbot, workflow_id_state],
             outputs=[
-                session_state, chatbot, audio_player, dice_display,
+                session_state, chatbot, audio_player,
                 start_btn, next_btn, auto_btn, workflow_id_state,
             ],
         )
 
         next_btn.click(
             fn=next_turn,
-            inputs=[session_state, chatbot, workflow_id_state],
-            outputs=[session_state, chatbot, audio_player, dice_display],
+            inputs=[session_state, chatbot, workflow_id_state, pending_dm_state],
+            outputs=[session_state, chatbot, audio_player, pending_dm_state],
         )
 
         auto_event = auto_btn.click(
             fn=auto_run,
-            inputs=[session_state, chatbot, workflow_id_state],
-            outputs=[session_state, chatbot, audio_player, dice_display],
+            inputs=[session_state, chatbot, workflow_id_state, pending_dm_state],
+            outputs=[session_state, chatbot, audio_player, pending_dm_state],
         )
 
         reset_btn.click(
             fn=reset_game,
             inputs=[workflow_id_state],
             outputs=[
-                session_state, chatbot, audio_player, dice_display,
-                start_btn, next_btn, auto_btn, workflow_id_state,
+                session_state, chatbot, audio_player,
+                start_btn, next_btn, auto_btn, workflow_id_state, pending_dm_state,
             ],
             cancels=[auto_event],
         )

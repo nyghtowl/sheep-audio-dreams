@@ -5,19 +5,18 @@ WebSocket streaming approach: characters begin speaking within <1s and audio flo
 ## Quick Start
 
 ```bash
-# From the repo root
-cd streaming
-python -m venv .venv
+# From the repo root — one-time setup (shared with REST demo)
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp ../rest/.env.example ../.env  # fill in your API keys
+cp .env.example .env  # fill in your API keys
 
 # Terminal 1 — Temporal server
 temporal server start-dev
 
 # Terminal 2 — App
 source .venv/bin/activate
-python app.py
+python streaming/app.py
 ```
 
 Open http://localhost:8000. Click **Start Adventure**, then **Next Turn** — Lyra's voice starts within a second. Watch the execution graph at http://localhost:8233.
@@ -50,13 +49,35 @@ StreamingGameWorkflow  (one per game session)
   └── ...
 ```
 
-Audio delivery is out-of-band from Temporal: the activity streams PCM16 chunks into an `asyncio.Queue`, and the FastAPI WebSocket handler forwards them to the browser in real time. Temporal tracks state, handles retries, and ensures the session survives crashes.
+**Workflow lifecycle** — one `StreamingGameWorkflow` per session. It starts on **Start Adventure** and stays alive until **Stop** or `MAX_TURNS` (12) is reached. Each **Next Turn** click sends a Temporal Update that runs `streaming_turn_activity` and returns the transcript when the turn is done.
+
+**How a click becomes a stream** — FastAPI is natively async, so there's no sync/async bridge. The one wrinkle: Temporal's client calls are blocking, so they run in `asyncio.run_in_executor()` to avoid stalling FastAPI's event loop. Once the activity starts, audio delivery runs on three independent loops:
+
+```
+Next Turn click (browser)
+  → WebSocket message → FastAPI (async)
+    → run_in_executor → Temporal Update: execute_turn
+      → streaming_turn_activity opens WebSocket to OpenAI/Gemini
+        → receives PCM16 chunk → puts in asyncio.Queue → heartbeat()
+        → receives PCM16 chunk → puts in asyncio.Queue → heartbeat()
+        → ... → puts None (end-of-turn sentinel)
+      ← returns {transcript}
+    ← FastAPI sends {"type": "turn_done"} to browser
+  ↑ simultaneously:
+  _forward_audio task reads queue → websocket.send_bytes() → browser Web Audio API plays chunks as they arrive
+```
+
+**Three loops, one turn** — the activity loop (AI WebSocket), the FastAPI loop (`_forward_audio` draining the queue to the browser), and the browser's Web Audio API playback loop all run concurrently. The `asyncio.Queue` is the handoff point: the activity produces chunks, `_forward_audio` consumes them, the browser plays them. Temporal never sees the audio bytes — only the transcript returned at the end.
 
 **Audio stays out of Temporal entirely** — neither the audio chunks nor the previous character's audio pass through Temporal's event log. The activity streams into the queue (which the WebSocket handler drains), and each character's output audio is stored in an in-process dict (`_last_audio[session_id]`). The next activity reads from it at the start of its turn. Temporal only serializes text: transcripts, turn index, session ID. This keeps the event log small and replay fast. If the server restarts, the next turn falls back to text-only context — the conversation continues without the voice inflection as input.
 
-Activities heartbeat on every audio chunk — if the connection is idle for 10s, Temporal marks the activity as failed and retries with a fresh WebSocket connection.
+**Why `_last_audio` lives in `app.py` directly** — unlike the REST demo, streaming doesn't need a separate `_shared_state.py` module. The Temporal worker runs inside FastAPI's async event loop (same process, no background thread), so `from app import _last_audio` in the activity resolves to the already-loaded module — the same dict the WebSocket handler is writing to. No re-import problem, no neutral middleman needed.
 
-The Temporal server runs separately by design — kill `python app.py` mid-turn, restart it, and the workflow resumes.
+**Heartbeats** — streaming activities run 10–30s per turn. Without heartbeats Temporal assumes the activity died and retries it. Every audio chunk received triggers `activity.heartbeat()`. The `heartbeat_timeout` is 10s — if no chunk arrives for 10s, Temporal cancels and retries the activity with a fresh WebSocket connection.
+
+**Crash recovery** — `_get_or_start_workflow` checks for a `RUNNING` workflow before starting a new one. Kill `python app.py` mid-turn, restart it, reconnect the browser — the workflow resumes from the same turn. The audio queue is reset on reconnect so no stale chunks are replayed.
+
+The Temporal server runs separately by design — it holds all workflow state independently of the app process.
 
 ## UI Features
 

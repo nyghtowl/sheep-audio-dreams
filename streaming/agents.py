@@ -213,8 +213,8 @@ async def _zara_streaming_turn(
         ) if has_audio else None,
     )
 
-    # Safety cap: ~8s of PCM16 at 24 kHz (8s × 24000 samples/s × 2 bytes = 384 KB)
-    MAX_AUDIO_BYTES = 384_000
+    # Safety cap: ~25s of PCM16 at 24 kHz (25s × 24000 samples/s × 2 bytes = 1.2 MB)
+    MAX_AUDIO_BYTES = 1_200_000
 
     async with client.aio.live.connect(model=agent.dialogue_model, config=config) as session:
         if has_audio:

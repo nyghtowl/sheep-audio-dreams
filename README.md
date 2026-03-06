@@ -14,7 +14,7 @@ Voice changes how people perceive AI. Audio adds an emotional dimension that tex
 
 ## What This Demo Shows
 
-**REST demo** — turn-by-turn request/response model. Each character fully completes before the other responds. The code is straightforward, the Temporal execution graph is easy to read, and you can see every step. The right place to start before adding streaming complexity.
+**REST demo** — turn-by-turn request/response model. Each character fully completes before the other responds. After each turn a Dungeon Master voice (Claude Haiku or GPT-4o-mini) narrates the outcome of a d20 roll in one punchy sentence — the DM text appears at the top of the next turn so it reads as a beat between characters, not an interruption. The code is straightforward, the Temporal execution graph is easy to read, and you can see every step. The right place to start before adding streaming complexity.
 
 **Streaming demo** — WebSocket connections to native speech models. Characters begin speaking within <1s. The same Temporal workflow wraps the session, but audio delivery is out-of-band: the activity streams PCM16 chunks into an asyncio.Queue while Temporal tracks state and handles retries. Both demos use a turn-by-turn model — modern production agents add interruption handling (one character cuts the other off mid-sentence) using the same WebSocket APIs shown here.
 
@@ -38,21 +38,27 @@ Voice changes how people perceive AI. Audio adds an emotional dimension that tex
 
 ---
 
+## Setup
+
+```bash
+# From the repo root — one-time setup for both demos
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env  # fill in your API keys
+```
+
+---
+
 ## REST Demo
 
 ```bash
-cd rest
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example ../.env  # fill in your API keys
-
 # Terminal 1 — Temporal server
 temporal server start-dev
 
 # Terminal 2 — Gradio app
 source .venv/bin/activate
-python app.py
+python rest/app.py
 ```
 
 Open http://localhost:7860. Temporal UI at http://localhost:8233.
@@ -64,18 +70,12 @@ See [rest/README.md](rest/README.md) for full details.
 ## Streaming Demo
 
 ```bash
-cd streaming
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp ../rest/.env.example ../.env  # fill in your API keys
-
 # Terminal 1 — Temporal server (shared with REST if both running)
 temporal server start-dev
 
 # Terminal 2 — FastAPI app
 source .venv/bin/activate
-python app.py
+python streaming/app.py
 ```
 
 Open http://localhost:8000. Click **Start Adventure**, then **Next Turn** — Lyra's voice starts within a second.
@@ -88,13 +88,13 @@ See [streaming/README.md](streaming/README.md) for full details.
 
 ## API Keys
 
-Copy `.env.example` from `rest/` and fill in:
+Copy `.env.example` and fill in:
 
 | Key | REST | Streaming |
 |-----|------|-----------|
 | `OPENAI_API_KEY` | Lyra audio + Zara TTS | Lyra Realtime |
-| `ANTHROPIC_API_KEY` | Zara dialogue fallback | Not needed |
-| `GEMINI_API_KEY` | Zara dialogue | Zara Live |
+| `ANTHROPIC_API_KEY` | DM narration (Claude Haiku); Zara dialogue fallback | Not needed |
+| `GEMINI_API_KEY` | Zara dialogue (primary) | Zara Live |
 | `ELEVENLABS_API_KEY` | Optional Zara TTS | Not used |
 
 **No keys?** Set `MOCK_MODE=1` in `.env` — REST demo only (streaming requires live API connections).
@@ -105,7 +105,7 @@ Copy `.env.example` from `rest/` and fill in:
 
 The Temporal server runs separately from the app in both demos. The app embeds the worker (the code that executes activities), but the server holds all workflow state independently. Kill the app mid-turn, restart it, and the workflow picks up exactly where it left off — same turn, same state.
 
-In the **REST demo**, each Next Turn click executes a Temporal Update. You'll see distinct activity nodes in the UI: one for Lyra (dialogue + voice in a single native audio call) and two for Zara (text generation, then TTS) — splitting them means each retries independently if one fails. If an API call hits a 429 rate limit, Temporal retries with exponential backoff and the workflow never fails.
+In the **REST demo**, each Next Turn click executes a Temporal Update. You'll see distinct activity nodes in the UI: one for Lyra (dialogue + voice in a single native audio call), one for Zara (Gemini text + OpenAI TTS combined), and one `generate_dm_reaction_activity` that narrates the d20 roll outcome using Claude Haiku or GPT-4o-mini. If an API call hits a 429 rate limit, Temporal retries with exponential backoff and the workflow never fails.
 
 In the **streaming demo**, the same Update pattern applies but the activity runs longer — it holds an open WebSocket connection and heartbeats Temporal on every audio chunk. The UI shows `streaming_turn_activity` nodes with timing that reflects the actual stream duration. Audio delivery is out-of-band (asyncio.Queue → browser), so Temporal tracks state and durability without serialising megabytes of audio.
 
