@@ -117,6 +117,21 @@ Copy `.env.example` and fill in:
 
 The Temporal server runs separately from the app in both demos. The app embeds the worker (the code that executes activities), but the server holds all workflow state independently. Kill the app mid-turn, restart it, and the workflow picks up exactly where it left off — same turn, same state.
 
+### Streaming Pipeline
+
+```mermaid
+flowchart LR
+    UI[Browser<br/>WebSocket] -->|Next Turn Update| WF[StreamingGameWorkflow]
+    WF -->|execute_activity| Act[streaming_turn_activity]
+    Act -.->|heartbeat per chunk| WF
+    Act <-->|WebSocket per turn| Lyra[OpenAI Realtime — Lyra]
+    Act <-->|WebSocket per turn| Zara[Gemini Live — Zara]
+    Act -->|PCM16 chunks out-of-band| Q[(asyncio.Queue)]
+    Q --> UI
+```
+
+Solid arrows = text state flowing through Temporal (durable). Dotted = heartbeat. The `asyncio.Queue` carrying audio chunks is in-process and *not* durable — that's the point: Temporal tracks turn state cheaply while raw audio bytes stream straight to the browser.
+
 **REST demo** — each Next Turn click executes a Temporal Update. Distinct activity nodes appear in the UI:
 - One for Lyra (dialogue + voice in a single native audio call)
 - One for Zara (Gemini text + OpenAI TTS combined)
