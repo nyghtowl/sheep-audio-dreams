@@ -246,7 +246,11 @@
 // reconnects to the same Temporal workflow rather than starting a new one.
 // sessionStorage is tab-scoped (cleared on tab close), same-origin only, and
 // never sent in HTTP requests — appropriate for a transient session UUID.
-const sessionId = sessionStorage.getItem('dnd_session_id') || Math.random().toString(36).slice(2, 10);
+// crypto.randomUUID (not Math.random) so other clients can't guess or collide
+// with the ID; the server rejects IDs that aren't in this format. Stored IDs
+// from older versions won't match and are regenerated.
+const storedId = sessionStorage.getItem('dnd_session_id');
+const sessionId = /^[a-f0-9-]{32,64}$/.test(storedId) ? storedId : crypto.randomUUID();
 sessionStorage.setItem('dnd_session_id', sessionId);
 
 let ws;
@@ -323,7 +327,15 @@ function addMessage(agentName, text, typing = false) {
   const chat = $("chat");
   const div = document.createElement("div");
   div.className = "message " + agentName.toLowerCase() + (typing ? " typing" : "");
-  div.innerHTML = `<div class="name">${agentName}</div><div class="text">${text}</div>`;
+  // textContent (never innerHTML) — transcripts are LLM output and must not
+  // be able to inject markup or script
+  const nameEl = document.createElement("div");
+  nameEl.className = "name";
+  nameEl.textContent = agentName;
+  const textEl = document.createElement("div");
+  textEl.className = "text";
+  textEl.textContent = text;
+  div.append(nameEl, textEl);
   chat.appendChild(div);
   div.scrollIntoView({ behavior: "smooth", block: "end" });
   return div;

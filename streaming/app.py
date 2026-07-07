@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -178,9 +179,17 @@ async def index():
     return HTMLResponse(content=html_path.read_text())
 
 
+# Client-supplied so a refreshed page can rejoin its Temporal workflow, but it
+# must be long enough that other clients can't guess or collide with it.
+_SESSION_ID_RE = re.compile(r"^[a-f0-9-]{32,64}$")
+
+
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """Handle a browser WebSocket connection for one game session."""
+    if not _SESSION_ID_RE.match(session_id):
+        await websocket.close(code=1008, reason="invalid session id")
+        return
     await websocket.accept()
 
     # Each session gets a fresh audio queue
@@ -250,9 +259,14 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                             "transcript": result["transcript"],
                             "turn": result["turn"],
                         })
-                    except Exception as exc:
-                        logger.error("Turn failed: %s", exc)
-                        await websocket.send_json({"type": "error", "message": str(exc)})
+                    except Exception:
+                        # Raw error strings can leak account/request details — log
+                        # them server-side, send the browser a generic message.
+                        logger.exception("Turn failed")
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Turn failed — check the server logs for details.",
+                        })
                 else:
                     # Fallback: run turn directly without Temporal
                     await _run_turn_direct(websocket, session_id, queue)
@@ -297,6 +311,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         _audio_queues.pop(session_id, None)
         _temporal_turn_index.pop(session_id, None)
         _last_audio.pop(session_id, None)
+        _fallback_history.pop(session_id, None)
+        _fallback_turn_index.pop(session_id, None)
 
 
 async def _forward_audio(websocket: WebSocket, session_id: str) -> None:
@@ -348,12 +364,17 @@ async def _run_turn_direct(websocket: WebSocket, session_id: str, queue: asyncio
             "transcript": transcript,
             "turn": turn_index + 1,
         })
-    except Exception as exc:
-        logger.error("Direct turn failed: %s", exc)
+    except Exception:
+        logger.exception("Direct turn failed")
         queue.put_nowait(None)
-        await websocket.send_json({"type": "error", "message": str(exc)})
+        await websocket.send_json({
+            "type": "error",
+            "message": "Turn failed — check the server logs for details.",
+        })
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
+    # Localhost by default; set HOST=0.0.0.0 to demo to a room
+    # (no auth — anyone on the LAN can drive turns that spend API credits)
+    uvicorn.run("app:app", host=os.environ.get("HOST", "127.0.0.1"), port=8000, reload=False)
