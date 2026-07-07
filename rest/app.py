@@ -213,9 +213,6 @@ def _temporal_run(coro, timeout: float = 90.0):
 # this process; never serialized through Temporal.
 from _shared_state import _last_audio
 
-_LATEST_AUDIO_PATHS: dict[str, str | None] = {"wav": None, "mp3": None}
-
-
 def _audio_duration_seconds(audio_bytes: bytes) -> float:
     """Return audio duration in seconds (WAV exact, MP3 estimated at 128kbps)."""
     if audio_bytes[:4] == b"RIFF":
@@ -230,18 +227,16 @@ def _audio_duration_seconds(audio_bytes: bytes) -> float:
 
 
 def audio_bytes_to_path(audio_bytes: bytes) -> str:
-    """Write audio bytes to a temp file and return the path.
+    """Write audio bytes to a fresh temp file and return the path.
 
-    Detects WAV vs MP3 by header and reuses a separate temp file for each format.
+    A new file per turn: a shared file would let concurrent sessions
+    overwrite each other's audio mid-playback.
     """
     suffix = ".wav" if audio_bytes[:4] == b"RIFF" else ".mp3"
-    key = suffix.lstrip(".")
-    if _LATEST_AUDIO_PATHS[key] is None:
-        fd, path = tempfile.mkstemp(suffix=suffix)
-        os.close(fd)
-        _LATEST_AUDIO_PATHS[key] = path
-    Path(_LATEST_AUDIO_PATHS[key]).write_bytes(audio_bytes)
-    return _LATEST_AUDIO_PATHS[key]
+    fd, path = tempfile.mkstemp(suffix=suffix)
+    with os.fdopen(fd, "wb") as f:
+        f.write(audio_bytes)
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -388,11 +383,13 @@ def next_turn(session: GameSession, chat_history: list, workflow_id: str | None,
             hint = "Check your `.env`: `OPENAI_API_KEY` and `ELEVENLABS_API_KEY` must be set and valid."
         else:
             hint = "Check your `.env` and API keys, or try again in a moment."
+        # Raw error strings stay in the server logs (logger.exception above) — they
+        # can leak account/request details, so only the hint is shown in the UI.
         chat_history.append({
             "role": "assistant",
             "content": (
                 f"⚠️ *The magical weave flickers... (API error)*\n\n{hint}\n\n"
-                f"<details><summary>Details</summary>\n`{err_str}`\n</details>"
+                "Full details are in the server logs."
             ),
         })
         return session, chat_history, None, None
@@ -422,11 +419,11 @@ def auto_run(session: GameSession, chat_history: list, workflow_id: str | None, 
     for i in range(AUTO_TURNS):
         try:
             name, dialogue, audio_bytes, dm_text, roll = future.result()
-        except Exception as e:
+        except Exception:
             logger.exception("Auto-run error")
             chat_history.append({
                 "role": "assistant",
-                "content": f"⚠️ *Auto-run stopped due to an error.*\n\n`{e}`",
+                "content": "⚠️ *Auto-run stopped due to an error.* Check the server logs for details.",
             })
             yield session, chat_history, None, None
             executor.shutdown(wait=False)
@@ -591,4 +588,6 @@ def build_app() -> gr.Blocks:
 
 if __name__ == "__main__":
     demo = build_app()
-    demo.launch(server_name="0.0.0.0", server_port=7860, css=CUSTOM_CSS)
+    # Localhost by default; set HOST=0.0.0.0 to demo to a room
+    # (no auth — anyone on the LAN can drive turns that spend API credits)
+    demo.launch(server_name=os.environ.get("HOST", "127.0.0.1"), server_port=7860, css=CUSTOM_CSS)
