@@ -19,31 +19,6 @@ from temporalio.common import RetryPolicy
 # ---------------------------------------------------------------------------
 
 @activity.defn
-async def generate_dialogue_activity(agent_name: str, history: list[dict]) -> str:
-    """Generate dialogue text for a character. Auto-retried by Temporal on failure."""
-    from config import AGENTS
-    from agents import generate_dialogue
-    agent = next(a for a in AGENTS if a.name == agent_name)
-    return generate_dialogue(agent, history)
-
-
-@activity.defn
-async def synthesize_voice_activity(text: str, agent_name: str, session_id: str) -> None:
-    """Synthesize voice for text. Auto-retried by Temporal on failure.
-
-    Stores raw audio bytes in app._last_audio[session_id] so the UI and the
-    next character can access the audio. Audio never passes through Temporal
-    serialisation — only text state transits Temporal.
-    """
-    from config import AGENTS
-    from agents import synthesize_voice
-    from _shared_state import _last_audio
-    agent = next(a for a in AGENTS if a.name == agent_name)
-    audio_bytes = synthesize_voice(text, agent)
-    _last_audio[session_id] = audio_bytes
-
-
-@activity.defn
 async def generate_dm_reaction_activity(name: str, dialogue: str, roll: int) -> str:
     """Ask the DM model to narrate the roll outcome. Auto-retried by Temporal on failure."""
     from agents import generate_dm_reaction
@@ -58,9 +33,9 @@ async def generate_turn_audio_activity(
 ) -> dict:
     """Single activity: generate dialogue + audio via native speech model (Lyra).
 
-    Reads the previous character's audio from app._last_audio[session_id] (in-process
-    memory) so it never passes through Temporal serialisation. Writes this turn's
-    audio back to _last_audio so the UI and the next character can access it.
+    Reads the previous character's audio from the shared in-process buffer so
+    it never passes through Temporal serialisation. Writes this turn's audio
+    back to that buffer so the UI and next character can access it.
 
     Returns {"dialogue": str} — audio is in _last_audio, not in the Temporal payload.
     """
@@ -102,9 +77,9 @@ class InteractiveGameWorkflow:
     One workflow = one game in the Temporal Web UI. Activities appear as
     nodes as each turn is taken.
 
-    Lyra's turns: one generate_turn_audio_activity (native audio, dialogue + voice in one call).
-    Zara's turns: generate_dialogue_activity then synthesize_voice_activity — two independent
-    nodes that each retry on their own if they fail.
+    Every character turn uses one generate_turn_audio_activity. Lyra calls a
+    native audio model; Zara combines Gemini text generation and OpenAI TTS
+    inside the same Activity. A separate Activity narrates the d20 result.
     """
 
     def __init__(self):
@@ -127,7 +102,7 @@ class InteractiveGameWorkflow:
     async def execute_turn(self) -> dict:
         """Execute one character turn. Called by each Next Turn click.
 
-        Audio is stored in app._last_audio[session_id] by the activities and
+        Audio is stored in the process-local shared buffer by the Activity and
         read directly by _get_turn — it never transits Temporal serialisation.
 
         Returns {"turn": int, "agent": str, "dialogue": str, "dm_text": str, "roll": int}.

@@ -2,11 +2,10 @@
 
 Each character connects to a streaming speech API over WebSocket and pushes
 PCM16 audio chunks into an asyncio.Queue as they arrive. The FastAPI WebSocket
-handler reads from the queue and forwards chunks to the browser in real time,
-so the first audio reaches the user within <1s of starting the turn.
+handler reads from the queue and forwards chunks to the browser in real time.
 
 Lyra  → OpenAI Realtime API (gpt-4o-realtime-preview)
-Zara  → Gemini Live (gemini-2.5-flash-native-audio)
+Zara  → Gemini Live (gemini-2.5-flash-native-audio-preview-12-2025)
 """
 
 from __future__ import annotations

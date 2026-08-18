@@ -16,7 +16,7 @@ class DialogueProvider(Enum):
     """Dialogue generation backend for each character."""
 
     OPENAI_AUDIO = "openai_audio"   # gpt-4o-audio-preview: audio in → audio out
-    GEMINI_AUDIO = "gemini_audio"   # gemini-2.0-flash-exp: audio in → audio out
+    GEMINI_AUDIO = "gemini_audio"   # Gemini dialogue + synthesized voice path
     CLAUDE_TEXT  = "claude_text"    # Claude text-only (existing path)
     OPENAI_TEXT  = "openai_text"    # OpenAI GPT text-only (existing path)
 
@@ -86,7 +86,7 @@ ZARA = AgentConfig(
         "Your familiar is a tiny fire salamander named Ember.\n\n" + SCENARIO_CONTEXT
     ),
     dialogue_provider=DialogueProvider.GEMINI_AUDIO,
-    dialogue_model="gemini-2.5-flash",  # text gen; TTS uses gemini-2.5-flash-preview-tts
+    dialogue_model="gemini-2.5-flash",  # text generation; OpenAI provides TTS
     native_voice="Aoede",
 )
 

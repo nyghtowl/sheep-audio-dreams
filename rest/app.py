@@ -157,10 +157,8 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 from temporal_workflow import (
     InteractiveGameWorkflow,
-    generate_dialogue_activity,
     generate_dm_reaction_activity,
     generate_turn_audio_activity,
-    synthesize_voice_activity,
 )
 
 _temporal_loop = asyncio.new_event_loop()
@@ -178,8 +176,6 @@ async def _start_embedded_worker() -> None:
             workflows=[InteractiveGameWorkflow],
             activities=[
                 generate_turn_audio_activity,
-                generate_dialogue_activity,
-                synthesize_voice_activity,
                 generate_dm_reaction_activity,
             ],
         )

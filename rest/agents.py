@@ -345,7 +345,7 @@ def _generate_zara_audio(
     history: list[dict],
     _last_audio: bytes | None,
 ) -> tuple[str, bytes]:
-    """Gemini two-step: gemini-2.5-flash for dialogue text, gemini-2.5-flash-preview-tts for voice.
+    """Two-step path: Gemini 2.5 Flash dialogue followed by OpenAI TTS.
 
     Returns (dialogue_text, wav_bytes).
     """

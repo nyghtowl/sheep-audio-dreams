@@ -25,13 +25,15 @@ python rest/app.py
 
 Open http://localhost:7860. Watch the execution graph at http://localhost:8233.
 
+The provider IDs below are the paths implemented by this demo, including its preview-era OpenAI audio model. See the root [provider compatibility note](../README.md#provider-compatibility) before treating them as defaults for a new application.
+
 ## API Keys
 
 | Key | Used for | Required? |
 |-----|----------|-----------|
 | `OPENAI_API_KEY` | Lyra's native voice (`gpt-4o-audio-preview`) + Zara's TTS (`tts-1`) | Yes |
-| `GEMINI_API_KEY` | Zara's dialogue via `gemini-2.5-flash` | Yes (for Zara) |
-| `ANTHROPIC_API_KEY` | DM narration (`claude-haiku-4-5`); Zara dialogue fallback if no Gemini key | Optional |
+| `GEMINI_API_KEY` | Zara's primary dialogue path via `gemini-2.5-flash` | Optional |
+| `ANTHROPIC_API_KEY` | DM narration (`claude-haiku-4-5`); optional dialogue fallback | Optional |
 | `ELEVENLABS_API_KEY` | Alternative TTS for Zara | Optional |
 
 **No keys?** Set `MOCK_MODE=1` in `.env` to run with scripted lines and silent audio.
@@ -41,7 +43,7 @@ Open http://localhost:7860. Watch the execution graph at http://localhost:8233.
 | Character | Dialogue | Voice | Path |
 |-----------|----------|-------|------|
 | **Lyra** | `gpt-4o-audio-preview` | OpenAI native audio | Audio-in, Audio-out (one API call) |
-| **Zara** | `gemini-2.5-flash` (Claude fallback) | OpenAI TTS `tts-1/nova` | Gemini text + OpenAI TTS (combined in one activity) |
+| **Zara** | `gemini-2.5-flash` (OpenAI/Claude fallback) | OpenAI TTS `tts-1/nova` | Gemini text + OpenAI TTS (combined in one activity) |
 | **DM** | `claude-haiku-4-5` or `gpt-4o-mini` | — | One short sentence per turn narrating the d20 roll outcome |
 
 ## Temporal Architecture
@@ -73,7 +75,7 @@ Next Turn click
 
 The app runs a background thread with its own `asyncio` event loop dedicated to Temporal. When Next Turn fires, Gradio calls `asyncio.run_coroutine_threadsafe()` to hand the coroutine to that background loop, then blocks on `.result()` until the Update returns.
 
-The Temporal server runs separately by design — if the app crashes mid-turn, restart it and the workflow resumes exactly where it left off.
+The Temporal server runs separately by design. If the app crashes mid-turn, a replacement Worker can replay the Workflow and retry an interrupted Activity from its beginning. Raw audio remains process-local, and the Gradio UI does not reconnect to the prior browser session automatically.
 
 **Audio stays out of workflow state** — the previous character's audio bytes live in an in-process dict (`_last_audio[session_id]`) rather than in Temporal's event log:
 - Activities read the previous audio and write their own back to it directly

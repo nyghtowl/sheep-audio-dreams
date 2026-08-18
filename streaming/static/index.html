@@ -212,12 +212,12 @@
     <div class="char-card">
       <h3>Lyra</h3>
       <div class="role">Half-Elf Ranger</div>
-      <div class="voice-badge lyra-badge">gpt-4o-realtime-preview · alloy</div>
+      <div class="voice-badge lyra-badge">OpenAI Realtime · alloy</div>
     </div>
     <div class="char-card">
       <h3>Zara</h3>
       <div class="role">Tiefling Sorceress</div>
-      <div class="voice-badge zara-badge">gemini-2.5-flash-native-audio · Aoede</div>
+      <div class="voice-badge zara-badge">Gemini Live · Aoede</div>
     </div>
   </div>
 
@@ -258,6 +258,7 @@ let intentionallyStopped = false;
 let reconnectAttempts = 0;
 let reconnectDelay = 1500;
 const MAX_RECONNECTS = 3;
+const MAX_TURNS = 12;
 
 // Web Audio context — created on first user gesture to satisfy browser policy
 let audioCtx = null;
@@ -352,7 +353,8 @@ function finaliseMessage(el, text) {
 // ---------------------------------------------------------------------------
 
 function connect() {
-  ws = new WebSocket(`ws://${location.host}/ws/${sessionId}`);
+  const protocol = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${protocol}://${location.host}/ws/${sessionId}`);
   ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {
@@ -402,8 +404,13 @@ function connect() {
       } else {
         addMessage(msg.agent, msg.transcript || "");
       }
-      setStatus(`Turn ${msg.turn} complete — click Next Turn`);
-      $("btn-next").disabled = false;
+      if (msg.turn >= MAX_TURNS) {
+        setStatus(`Adventure complete — ${MAX_TURNS} turns played`);
+        $("btn-next").disabled = true;
+      } else {
+        setStatus(`Turn ${msg.turn} complete — click Next Turn`);
+        $("btn-next").disabled = false;
+      }
 
     } else if (msg.type === "audio_done") {
       setSpeaking(null);
@@ -455,6 +462,8 @@ connect();
 // ---------------------------------------------------------------------------
 
 $("btn-start").addEventListener("click", () => {
+  intentionallyStopped = false;
+  sessionStorage.setItem('dnd_session_id', sessionId);
   getAudioCtx(); // resume AudioContext on user gesture
   $("btn-start").disabled = true;
   setStatus("Starting…");

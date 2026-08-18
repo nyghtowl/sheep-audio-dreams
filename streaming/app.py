@@ -6,9 +6,9 @@ Serves a single-page HTML frontend and a WebSocket endpoint that:
 3. Forwards streaming audio chunks from the asyncio.Queue to the browser
 4. Handles stop/reset by signalling end_game to the workflow
 
-The Temporal worker is embedded in a background thread (same pattern as
-rest/app.py) so Temporal's durable execution wraps every character turn.
-If the server crashes mid-turn, restart it and the workflow resumes.
+The Temporal worker is started by FastAPI's lifespan handler on the same
+asyncio event loop as the browser WebSocket and audio queues. Temporal's
+durable execution wraps every character turn while PCM audio stays in-process.
 
 Audio queue pattern:
   streaming_turn_activity → asyncio.Queue[session_id] → WebSocket → browser
@@ -23,7 +23,7 @@ import logging
 import os
 import re
 import sys
-import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -37,6 +37,8 @@ load_dotenv()
 sys.path.insert(0, os.path.dirname(__file__))
 
 from config import AGENTS, DM_NARRATION
+from _shared_state import audio_queues as _audio_queues
+from _shared_state import last_audio as _last_audio
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s: %(message)s")
@@ -44,63 +46,56 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 TASK_QUEUE = "dnd-streaming-game"
 STATIC_DIR = Path(__file__).parent / "static"
 
-# ---------------------------------------------------------------------------
-# Audio queues — shared between the FastAPI handlers and the Temporal activities
-# ---------------------------------------------------------------------------
-
-# key: session_id → Queue of bytes (PCM16 chunks) or None (end-of-turn sentinel)
-_audio_queues: dict[str, asyncio.Queue] = {}
-
-# Previous turn's raw PCM bytes — read by each activity as audio input for the
-# next character, written after each turn completes. Lives only in this process;
-# never serialized through Temporal. On crash+restart the next turn starts with
-# text-only context, which is fine.
-_last_audio: dict[str, bytes | None] = {}
-
 # Turn index for Temporal-managed sessions (mirrors workflow._turn_index locally
 # so we can send turn_start before the blocking execute_turn call)
 _temporal_turn_index: dict[str, int] = {}
 
 # ---------------------------------------------------------------------------
-# Embedded Temporal worker
+# Embedded Temporal worker — shares FastAPI's asyncio event loop
 # ---------------------------------------------------------------------------
 
-_temporal_loop = asyncio.new_event_loop()
 _temporal_client = None
+_temporal_worker = None
+_temporal_worker_task: asyncio.Task | None = None
 
 
 async def _start_embedded_worker() -> None:
-    global _temporal_client
+    global _temporal_client, _temporal_worker, _temporal_worker_task
     try:
         from temporalio.client import Client
         from temporalio.worker import Worker
         from temporal_workflow import StreamingGameWorkflow, streaming_turn_activity
 
-        _temporal_client = await Client.connect("localhost:7233")
+        client = await Client.connect("localhost:7233")
         worker = Worker(
-            _temporal_client,
+            client,
             task_queue=TASK_QUEUE,
             workflows=[StreamingGameWorkflow],
             activities=[streaming_turn_activity],
         )
-        asyncio.create_task(worker.run())
+        worker_task = asyncio.create_task(worker.run())
+        _temporal_client = client
+        _temporal_worker = worker
+        _temporal_worker_task = worker_task
         logger.info("Temporal streaming worker embedded — watch http://localhost:8233")
     except Exception as exc:
+        _temporal_client = None
+        _temporal_worker = None
+        _temporal_worker_task = None
         logger.warning("Temporal not reachable (%s) — turns run without Temporal", exc)
 
 
-def _run_temporal_loop() -> None:
-    asyncio.set_event_loop(_temporal_loop)
-    _temporal_loop.run_until_complete(_start_embedded_worker())
-    _temporal_loop.run_forever()
-
-
-threading.Thread(target=_run_temporal_loop, daemon=True, name="temporal-streaming-worker").start()
-
-
-def _temporal_run(coro, timeout: float = 120.0):
-    """Run an async Temporal coroutine from sync context."""
-    return asyncio.run_coroutine_threadsafe(coro, _temporal_loop).result(timeout=timeout)
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Start and stop the embedded Worker with the FastAPI application."""
+    await _start_embedded_worker()
+    try:
+        yield
+    finally:
+        if _temporal_worker is not None:
+            await _temporal_worker.shutdown()
+        if _temporal_worker_task is not None:
+            await _temporal_worker_task
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +163,7 @@ async def _end_game(workflow_id: str) -> None:
 # FastAPI app
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="D&D Voice Agents — Streaming Demo")
+app = FastAPI(title="D&D Voice Agents — Streaming Demo", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
@@ -216,15 +211,14 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 # Send opening narration, start or rejoin workflow
                 await websocket.send_json({"type": "narration", "text": DM_NARRATION})
                 try:
-                    loop = asyncio.get_event_loop()
-                    workflow_id = await loop.run_in_executor(
-                        None, lambda: _temporal_run(_get_or_start_workflow(session_id), timeout=15)
+                    workflow_id = await asyncio.wait_for(
+                        _get_or_start_workflow(session_id), timeout=15
                     )
                     # On rejoin, sync local turn counter from the live workflow
                     if workflow_id and _temporal_client:
                         try:
-                            turn_idx = await loop.run_in_executor(
-                                None, lambda: _temporal_run(_get_workflow_turn_index(workflow_id), timeout=5)
+                            turn_idx = await asyncio.wait_for(
+                                _get_workflow_turn_index(workflow_id), timeout=5
                             )
                             _temporal_turn_index[session_id] = turn_idx
                         except Exception:
@@ -248,9 +242,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                             "agent": agent.name,
                             "turn": turn_index + 1,
                         })
-                        loop = asyncio.get_event_loop()
-                        result = await loop.run_in_executor(
-                            None, lambda: _temporal_run(_execute_turn(workflow_id), timeout=120)
+                        result = await asyncio.wait_for(
+                            _execute_turn(workflow_id), timeout=120
                         )
                         _temporal_turn_index[session_id] = turn_index + 1
                         await websocket.send_json({
@@ -274,10 +267,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             elif msg_type == "stop":
                 if workflow_id and _temporal_client:
                     try:
-                        loop = asyncio.get_event_loop()
-                        await loop.run_in_executor(
-                            None, lambda: _temporal_run(_end_game(workflow_id), timeout=10)
-                        )
+                        await asyncio.wait_for(_end_game(workflow_id), timeout=10)
                     except Exception:
                         pass
                 # Drain the current active queue (may differ from initial `queue`
@@ -293,6 +283,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 workflow_id = None
                 _temporal_turn_index.pop(session_id, None)
                 _last_audio.pop(session_id, None)
+                _fallback_history.pop(session_id, None)
+                _fallback_turn_index.pop(session_id, None)
                 await websocket.send_json({"type": "stopped"})
 
     except WebSocketDisconnect:
@@ -302,10 +294,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         # Clean up: end workflow if still running
         if workflow_id and _temporal_client:
             try:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(
-                    None, lambda: _temporal_run(_end_game(workflow_id), timeout=5)
-                )
+                await asyncio.wait_for(_end_game(workflow_id), timeout=5)
             except Exception:
                 pass
         _audio_queues.pop(session_id, None)
@@ -377,4 +366,4 @@ if __name__ == "__main__":
     import uvicorn
     # Localhost by default; set HOST=0.0.0.0 to demo to a room
     # (no auth — anyone on the LAN can drive turns that spend API credits)
-    uvicorn.run("app:app", host=os.environ.get("HOST", "127.0.0.1"), port=8000, reload=False)
+    uvicorn.run(app, host=os.environ.get("HOST", "127.0.0.1"), port=8000, reload=False)

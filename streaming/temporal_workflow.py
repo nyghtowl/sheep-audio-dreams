@@ -49,7 +49,7 @@ async def streaming_turn_activity(
     session_id. The FastAPI WebSocket handler reads from that queue and
     forwards bytes to the browser in real time.
 
-    Previous-turn audio is read from and written to app._last_audio (in-process
+    Previous-turn audio is read from and written to shared in-process state
     memory) so it never passes through Temporal serialisation. Temporal only
     tracks text state: turn index, transcript history, session lifecycle.
 
@@ -59,35 +59,23 @@ async def streaming_turn_activity(
     Returns {"transcript": str, "agent": str}.
     """
     # Import here (inside activity) to avoid workflow sandbox issues
-    import sys
-    import os
-    sys.path.insert(0, os.path.dirname(__file__))
-
     from config import AGENTS
     from agents import streaming_turn
-
-    # Both _audio_queues and _last_audio live in app.py (same process).
-    # Import lazily so this module doesn't require app.py at import time.
-    try:
-        from app import _audio_queues, _last_audio
-    except ImportError:
-        # Fallback for testing: use local dicts
-        _audio_queues = {}
-        _last_audio = {}
+    from _shared_state import audio_queues, last_audio
 
     agent = next(a for a in AGENTS if a.name == agent_name)
 
     # Read previous turn's audio from in-memory store (never serialized by Temporal)
-    last_audio = _last_audio.get(session_id)
+    previous_audio = last_audio.get(session_id)
 
     # On retry, reset the queue so stale chunks aren't replayed
     queue: asyncio.Queue = asyncio.Queue()
-    _audio_queues[session_id] = queue
+    audio_queues[session_id] = queue
 
     # Collect audio while streaming — audio_out captures a copy of every chunk
     # so we can store it for the next character without re-reading the queue.
     audio_out: list[bytes] = []
-    transcript = await streaming_turn(agent, history, last_audio, queue, audio_out=audio_out)
+    transcript = await streaming_turn(agent, history, previous_audio, queue, audio_out=audio_out)
 
     # Store this turn's audio for the next character (in-memory, not in Temporal).
     # Cap at ~2s of PCM16 at 24kHz — Gemini Live rejects large inline audio blobs.
@@ -96,7 +84,7 @@ async def streaming_turn_activity(
     audio_bytes = b"".join(audio_out)[:MAX_PASS_AUDIO]
     if len(audio_bytes) % 2:
         audio_bytes = audio_bytes[:-1]
-    _last_audio[session_id] = audio_bytes if audio_bytes else None
+    last_audio[session_id] = audio_bytes if audio_bytes else None
 
     return {"transcript": transcript, "agent": agent_name}
 
